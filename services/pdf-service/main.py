@@ -65,7 +65,7 @@ async def startup():
     for i in range(30):
         try:
             _cluster = Cluster(contact_points=CASSANDRA_HOSTS, port=CASSANDRA_PORT,
-                               auth_provider=auth, protocol_version=5)
+                               auth_provider=auth, protocol_version=4)
             _session = _cluster.connect(CASSANDRA_KEYSPACE)
             _session.row_factory = dict_factory
             logger.info("PDF service: Cassandra conectado")

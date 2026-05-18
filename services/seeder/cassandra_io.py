@@ -42,7 +42,7 @@ def connect(retries: int = 30, delay: float = 5.0) -> tuple[Cluster, Session]:
                 port=port,
                 auth_provider=auth,
                 execution_profiles={EXEC_PROFILE_DEFAULT: profile},
-                protocol_version=5,
+                protocol_version=4,
             )
             session = cluster.connect(keyspace)
             logger.info(f"Cassandra conectado en {hosts}:{port} keyspace={keyspace}")

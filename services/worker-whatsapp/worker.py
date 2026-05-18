@@ -57,7 +57,7 @@ def connect_cassandra():
     auth = PlainTextAuthProvider(CASSANDRA_USER, CASSANDRA_PASSWORD) if CASSANDRA_USER else None
     for i in range(30):
         try:
-            c = Cluster(CASSANDRA_HOSTS, port=CASSANDRA_PORT, auth_provider=auth, protocol_version=5)
+            c = Cluster(CASSANDRA_HOSTS, port=CASSANDRA_PORT, auth_provider=auth, protocol_version=4)
             s = c.connect(CASSANDRA_KEYSPACE)
             s.row_factory = dict_factory
             return c, s

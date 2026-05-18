@@ -1,34 +1,44 @@
-"""SEMAPA Seeder.
+"""SEMAPA Seeder — Fase 2.
 
-Pobla catálogos, usuarios del sistema, personas, infraestructuras y medidores.
+Pobla catálogos + personas + infraestructuras + medidores + usuarios sistema.
 
-Objetivo:
-- 80.000 personas naturales
-- 5.000 personas jurídicas
-- 100.000 infraestructuras
-- 120.000 medidores IoT
-- 32 radiobases LoRaWAN
+Pasos:
+1. Carga Excel (Recursos_Practica_5.xlsx).
+2. Escribe CSVs limpios en /data/seeds/.
+3. Inserta catálogos en Cassandra.
+4. Genera 85 000 personas (80 k naturales + 5 k jurídicas).
+5. Distribuye 100 000+ infraestructuras según conteos por zona del Excel.
+6. Genera 120 000 medidores con coordenadas controladas por distrito/zona.
+7. Inserta 3 usuarios del sistema (alcaldía/gerencia/contabilidad) con bcrypt.
+
+Optimización:
+- Prepared statements.
+- execute_concurrent_with_args(concurrency=100..200).
+- tqdm para progreso.
 """
-
 from __future__ import annotations
 
-import math
 import os
 import random
 import time
 import uuid
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import bcrypt
+from cassandra.query import PreparedStatement
 from faker import Faker
 from loguru import logger
 from tqdm import tqdm
 
 from cassandra_io import bulk_insert, connect
 from csv_writer import write_csv
+from geo_reference import DEFAULT_INFRA_RADIUS_DEG, DEFAULT_MEDIDOR_RADIUS_DEG, deterministic_point_near, zone_center
 from excel_loader import (
     SUB_ALCALDIAS,
+    gateways,
+    gateway_pool_for,
     load_distritos_zonas,
     load_errores,
     load_modelos,
@@ -41,21 +51,17 @@ from excel_loader import (
 
 EXCEL_PATH = os.getenv("SEEDER_EXCEL", "/recursos/recursos.xlsx")
 SEEDS_DIR = Path(os.getenv("SEEDS_DIR", "/data/seeds"))
-
-CONCURRENCY = int(os.getenv("SEED_CONCURRENCY", "60"))
-BATCH_SIZE = int(os.getenv("SEED_BATCH_SIZE", "1000"))
+CONCURRENCY = int(os.getenv("SEED_CONCURRENCY", "120"))
 SEED = int(os.getenv("SEED_RNG", "20250512"))
-
-TARGET_INFRAESTRUCTURAS = int(os.getenv("SEED_TARGET_INFRA", "100000"))
-TARGET_MEDIDORES = int(os.getenv("SEED_TARGET_MEDIDORES", "120000"))
-
-RESET_BEFORE_SEED = os.getenv("SEED_RESET", "false").lower() in {"1", "true", "yes", "si"}
 
 random.seed(SEED)
 fake = Faker("es_ES")
 Faker.seed(SEED)
 
+
 CATEGORIAS = ["R1", "R2", "R3", "R4", "C", "CE", "I", "P", "S"]
+TARGET_INFRAESTRUCTURAS = int(os.getenv("SEED_TARGET_INFRA", "100000"))
+TARGET_MEDIDORES = int(os.getenv("SEED_TARGET_MEDIDORES", "120000"))
 
 
 def _bs(text: str) -> bytes:
@@ -63,255 +69,124 @@ def _bs(text: str) -> bytes:
 
 
 def jitter(lat: float, lon: float, mag: float = 0.005) -> tuple[float, float]:
-    return lat + random.uniform(-mag, mag), lon + random.uniform(-mag, mag)
-
-
-def gateways_32() -> list[tuple[int, str, float, float]]:
-    base = [
-        (1, "LoRaWan-Teleferico", -17.38922, -66.14172),
-        (2, "LoRaWan-ParqueVial", -17.38100, -66.15336),
-        (3, "LoRaWan-ParqueLincon", -17.36986, -66.17639),
-        (4, "LoRaWan-Petrolera", -17.44408, -66.14069),
-        (5, "LoRaWan-SurEste", -17.42000, -66.11000),
-    ]
-
-    centro_lat = -17.3935
-    centro_lon = -66.1570
-    extras = []
-
-    for gateway_id in range(6, 33):
-        idx = gateway_id - 6
-        angle = (2 * math.pi * idx) / 27
-        radius_lat = 0.020 + (idx % 4) * 0.006
-        radius_lon = 0.025 + (idx % 5) * 0.006
-        lat = centro_lat + math.sin(angle) * radius_lat
-        lon = centro_lon + math.cos(angle) * radius_lon
-        extras.append(
-            (
-                gateway_id,
-                f"LoRaWan-RadioBase-{gateway_id:02d}",
-                round(lat, 6),
-                round(lon, 6),
-            )
-        )
-
-    return base + extras
-
-
-def gateway_para_zona(zona) -> int:
-    return ((zona.distrito_id * 7 + zona.zona_id * 3) % 32) + 1
-
-
-def gen_mac(seq: int) -> str:
-    return (
-        f"30:E2:"
-        f"{(seq >> 24) & 0xFF:02X}:"
-        f"{(seq >> 16) & 0xFF:02X}:"
-        f"{(seq >> 8) & 0xFF:02X}:"
-        f"{seq & 0xFF:02X}"
-    )
-
-
-def gen_serie(seq: int) -> str:
-    return f"SN={seq // 100000:03d}-{seq % 100000:05d}-{random.randint(1000, 9999)}"
-
-
-def reset_tables(session) -> None:
-    tables = [
-        "lecturas_raw",
-        "lecturas_por_medidor",
-        "lecturas_por_zona_dia",
-        "lecturas_manuales",
-        "cobertura_gateway",
-        "facturas",
-        "facturas_por_periodo",
-        "medidores",
-        "infraestructuras",
-        "personas",
-        "usuarios_sistema",
-        "zonas",
-        "distritos",
-        "sub_alcaldias",
-        "gateways",
-        "modelos_medidor",
-        "tarifas",
-        "errores_iot",
-        "tipos_infraestructura",
-    ]
-
-    logger.warning("SEED_RESET activo: limpiando tablas antes de poblar...")
-    for table in tables:
-        try:
-            session.execute(f"TRUNCATE {table}")
-            logger.info(f"Tabla limpia: {table}")
-        except Exception as exc:
-            logger.warning(f"No se pudo limpiar {table}: {exc}")
+    return (lat + random.uniform(-mag, mag), lon + random.uniform(-mag, mag))
 
 
 def seed_catalogos(session, zonas, distritos, tarifas, modelos, errores, tipos):
     logger.info("Insertando catálogos...")
 
+    # sub_alcaldias
     ps = session.prepare("INSERT INTO sub_alcaldias (sub_alcaldia_id, nombre) VALUES (?, ?)")
     bulk_insert(session, ps, SUB_ALCALDIAS, concurrency=10)
 
+    # distritos
     ps = session.prepare(
-        "INSERT INTO distritos (distrito_id, sub_alcaldia_id, nombre, habitantes) "
-        "VALUES (?, ?, ?, ?)"
+        "INSERT INTO distritos (distrito_id, sub_alcaldia_id, nombre, habitantes) VALUES (?, ?, ?, ?)"
     )
     bulk_insert(
-        session,
-        ps,
+        session, ps,
         [(d.distrito_id, d.sub_alcaldia_id, d.nombre, d.habitantes) for d in distritos],
         concurrency=20,
     )
 
+    # zonas
     ps = session.prepare(
-        "INSERT INTO zonas (distrito_id, zona_id, nombre, gateway_id) "
-        "VALUES (?, ?, ?, ?)"
+        "INSERT INTO zonas (distrito_id, zona_id, nombre, gateway_id) VALUES (?, ?, ?, ?)"
     )
     bulk_insert(
-        session,
-        ps,
-        [(z.distrito_id, z.zona_id, z.nombre, gateway_para_zona(z)) for z in zonas],
+        session, ps,
+        [(z.distrito_id, z.zona_id, z.nombre, z.gateway_id) for z in zonas],
         concurrency=40,
     )
 
+    # gateways
     ps = session.prepare(
         "INSERT INTO gateways (gateway_id, nombre, latitud, longitud) VALUES (?, ?, ?, ?)"
     )
-    bulk_insert(session, ps, gateways_32(), concurrency=10)
+    bulk_insert(session, ps, gateways(), concurrency=5)
 
+    # modelos
     ps = session.prepare(
         "INSERT INTO modelos_medidor (modelo_id, marca, modelo, conectividad, aplicacion) "
         "VALUES (?, ?, ?, ?, ?)"
     )
     bulk_insert(
-        session,
-        ps,
+        session, ps,
         [(m.modelo_id, m.marca, m.modelo, m.conectividad, m.aplicacion) for m in modelos],
-        concurrency=10,
+        concurrency=5,
     )
 
+    # tarifas
     ps = session.prepare(
         "INSERT INTO tarifas (categoria, alias, fijo_m3, usd_mes, r_13_25, r_26_50, "
         "r_51_75, r_76_100, r_101_150, r_mas_151, descripcion) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     bulk_insert(
-        session,
-        ps,
+        session, ps,
         [
-            (
-                t.categoria,
-                t.alias,
-                t.fijo_m3,
-                t.usd_mes,
-                t.r_13_25,
-                t.r_26_50,
-                t.r_51_75,
-                t.r_76_100,
-                t.r_101_150,
-                t.r_mas_151,
-                t.descripcion,
-            )
+            (t.categoria, t.alias, t.fijo_m3, t.usd_mes, t.r_13_25, t.r_26_50,
+             t.r_51_75, t.r_76_100, t.r_101_150, t.r_mas_151, t.descripcion)
             for t in tarifas
         ],
-        concurrency=10,
+        concurrency=5,
     )
 
+    # errores
     ps = session.prepare("INSERT INTO errores_iot (codigo, descripcion) VALUES (?, ?)")
-    bulk_insert(session, ps, errores, concurrency=10)
+    bulk_insert(session, ps, errores, concurrency=5)
 
-    ps = session.prepare(
-        "INSERT INTO tipos_infraestructura (tipo_id, descripcion) VALUES (?, ?)"
-    )
-    bulk_insert(session, ps, [(t.tipo_id, t.descripcion) for t in tipos], concurrency=10)
+    # tipos infraestructura
+    ps = session.prepare("INSERT INTO tipos_infraestructura (tipo_id, descripcion) VALUES (?, ?)")
+    bulk_insert(session, ps, [(t.tipo_id, t.descripcion) for t in tipos], concurrency=5)
 
     logger.success("Catálogos insertados.")
 
 
 def seed_usuarios(session):
     logger.info("Insertando usuarios del sistema...")
-
     ps = session.prepare(
         "INSERT INTO usuarios_sistema (username, password_hash, rol, nombre, email, activo, "
         "fecha_creacion, ultimo_acceso) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     )
-
     now = datetime.utcnow()
-    usuarios = [
-        (
-            "alcaldia",
-            _bs("Alcaldia2025!").decode(),
-            "ALCALDIA",
-            "Alcaldía Cochabamba",
-            "alcaldia@semapa.bo",
-            True,
-            now,
-            None,
-        ),
-        (
-            "gerencia",
-            _bs("Gerencia2025!").decode(),
-            "GERENCIA",
-            "Gerencia Operativa",
-            "gerencia@semapa.bo",
-            True,
-            now,
-            None,
-        ),
-        (
-            "contabilidad",
-            _bs("Contab2025!").decode(),
-            "CONTABILIDAD",
-            "Contabilidad",
-            "contabilidad@semapa.bo",
-            True,
-            now,
-            None,
-        ),
+    creds = [
+        ("alcaldia", _bs("Alcaldia2025!").decode(), "ALCALDIA", "Alcaldía Cochabamba",
+         "alcaldia@semapa.bo", True, now, None),
+        ("gerencia", _bs("Gerencia2025!").decode(), "GERENCIA", "Gerencia Operativa",
+         "gerencia@semapa.bo", True, now, None),
+        ("contabilidad", _bs("Contab2025!").decode(), "CONTABILIDAD", "Contabilidad",
+         "contabilidad@semapa.bo", True, now, None),
     ]
-
-    bulk_insert(session, ps, usuarios, concurrency=3)
+    bulk_insert(session, ps, creds, concurrency=3)
     logger.success("Usuarios listos: alcaldia / gerencia / contabilidad")
 
 
 def seed_personas(session, n_naturales: int = 80_000, n_juridicas: int = 5_000) -> list[uuid.UUID]:
     logger.info(f"Generando {n_naturales} personas naturales + {n_juridicas} jurídicas...")
-
     ps = session.prepare(
         "INSERT INTO personas (persona_id, tipo, documento, nombre, apellidos, razon_social, "
         "email, telefono, fecha_registro) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
-
     ids: list[uuid.UUID] = []
     rows: list[tuple] = []
-
     now = datetime.utcnow()
     fecha_min = datetime(2018, 1, 1)
     rango_dias = (now - fecha_min).days
 
     pbar = tqdm(total=n_naturales + n_juridicas, desc="personas")
-
     for _ in range(n_naturales):
         pid = uuid.uuid4()
         ids.append(pid)
-
-        rows.append(
-            (
-                pid,
-                "NATURAL",
-                str(random.randint(1_000_000, 12_999_999)),
-                fake.first_name(),
-                f"{fake.last_name()} {fake.last_name()}",
-                None,
-                fake.email(),
-                f"7{random.randint(1000000, 9999999)}",
-                fecha_min + timedelta(days=random.randint(0, rango_dias)),
-            )
-        )
-
-        if len(rows) >= BATCH_SIZE:
+        ci = str(random.randint(1_000_000, 12_999_999))
+        rows.append((
+            pid, "NATURAL", ci,
+            fake.first_name(), fake.last_name() + " " + fake.last_name(),
+            None,
+            fake.email(), f"7{random.randint(1000000, 9999999)}",
+            fecha_min + timedelta(days=random.randint(0, rango_dias)),
+        ))
+        if len(rows) >= 5000:
             bulk_insert(session, ps, rows, concurrency=CONCURRENCY)
             pbar.update(len(rows))
             rows.clear()
@@ -319,22 +194,14 @@ def seed_personas(session, n_naturales: int = 80_000, n_juridicas: int = 5_000) 
     for _ in range(n_juridicas):
         pid = uuid.uuid4()
         ids.append(pid)
-
-        rows.append(
-            (
-                pid,
-                "JURIDICA",
-                str(random.randint(100_000_000, 999_999_999)),
-                None,
-                None,
-                fake.company(),
-                f"contacto@{fake.domain_name()}",
-                f"4{random.randint(1000000, 9999999)}",
-                fecha_min + timedelta(days=random.randint(0, rango_dias)),
-            )
-        )
-
-        if len(rows) >= BATCH_SIZE:
+        nit = str(random.randint(100_000_000, 999_999_999))
+        rows.append((
+            pid, "JURIDICA", nit,
+            None, None, fake.company(),
+            f"contacto@{fake.domain_name()}", f"4{random.randint(1000000, 9999999)}",
+            fecha_min + timedelta(days=random.randint(0, rango_dias)),
+        ))
+        if len(rows) >= 5000:
             bulk_insert(session, ps, rows, concurrency=CONCURRENCY)
             pbar.update(len(rows))
             rows.clear()
@@ -342,339 +209,248 @@ def seed_personas(session, n_naturales: int = 80_000, n_juridicas: int = 5_000) 
     if rows:
         bulk_insert(session, ps, rows, concurrency=CONCURRENCY)
         pbar.update(len(rows))
-
     pbar.close()
+
     logger.success(f"Personas: {len(ids)} insertadas")
     return ids
 
 
-def construir_plan_infraestructuras(zonas) -> list[dict]:
-    raw_plan = []
-
-    for zona in zonas:
-        for categoria in CATEGORIAS:
-            cantidad = int(zona.counts.get(categoria, 0) or 0)
-            if cantidad > 0:
-                raw_plan.append(
-                    {
-                        "zona": zona,
-                        "categoria": categoria,
-                        "source": cantidad,
-                    }
-                )
-
-    total_source = sum(item["source"] for item in raw_plan)
-
-    if total_source <= 0:
-        raise RuntimeError("No existen conteos por zona/categoría para generar infraestructuras.")
-
-    exactos = []
-    total_base = 0
-
-    for item in raw_plan:
-        exact = item["source"] * TARGET_INFRAESTRUCTURAS / total_source
-        base = int(math.floor(exact))
-        if item["source"] > 0 and base == 0:
-            base = 1
-        item["cantidad"] = base
-        item["residuo"] = exact - base
-        exactos.append(item)
-        total_base += base
-
-    diferencia = TARGET_INFRAESTRUCTURAS - total_base
-
-    if diferencia > 0:
-        exactos.sort(key=lambda x: x["residuo"], reverse=True)
-        for i in range(diferencia):
-            exactos[i % len(exactos)]["cantidad"] += 1
-    elif diferencia < 0:
-        exactos.sort(key=lambda x: x["residuo"])
-        faltante = abs(diferencia)
-        i = 0
-        while faltante > 0 and i < len(exactos):
-            if exactos[i]["cantidad"] > 1:
-                exactos[i]["cantidad"] -= 1
-                faltante -= 1
-            else:
-                i += 1
-
-    return exactos
-
-
-def construir_medidores_por_infra(total_infra: int) -> list[int]:
-    if TARGET_MEDIDORES < total_infra:
-        raise RuntimeError("TARGET_MEDIDORES no puede ser menor a TARGET_INFRAESTRUCTURAS.")
-
-    medidores_por_infra = [1] * total_infra
-    extra = TARGET_MEDIDORES - total_infra
-
-    while extra > 0:
-        idx = random.randrange(total_infra)
-        if medidores_por_infra[idx] < 5:
-            medidores_por_infra[idx] += 1
-            extra -= 1
-
-    return medidores_por_infra
-
-
 def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_educativas):
-    logger.info("Generando infraestructuras + medidores...")
+    """Genera exactamente 100 000 infraestructuras y 120 000 medidores.
 
+    La hoja Distritos distribuye 100 000 registros base. En esta versión esos
+    registros se interpretan como infraestructuras/servicios base, no como el
+    total final de medidores. Luego se añaden 20 000 medidores adicionales para
+    representar reemplazos, medidores dañados, medidores viejos, retiros o
+    múltiples puntos de consumo en una misma infraestructura.
+
+    Relación defendible para exposición:
+        persona -> infraestructura/servicio -> historial de medidores
+    """
+    logger.info("Generando infraestructuras + medidores según consigna...")
     ps_infra = session.prepare(
         "INSERT INTO infraestructuras (infraestructura_id, persona_id, tipo_infra, "
         "distrito_id, zona_id, direccion, latitud, longitud) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     )
-
     ps_med = session.prepare(
         "INSERT INTO medidores (medidor_id, mac, numero_serie, numero_contrato, "
-        "infraestructura_id, modelo_id, categoria_tarifa, gateway_id, distrito_id, zona_id, "
-        "latitud, longitud, fecha_instalacion, estado) VALUES "
-        "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "infraestructura_id, persona_id, modelo_id, categoria_tarifa, gateway_id, distrito_id, zona_id, "
+        "latitud, longitud, fecha_instalacion, fecha_retiro, estado, motivo_estado, "
+        "medidor_anterior_id, es_medidor_actual) VALUES "
+        "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
 
-    plan = construir_plan_infraestructuras(zonas)
-    total_plan_infra = sum(item["cantidad"] for item in plan)
-
-    if total_plan_infra != TARGET_INFRAESTRUCTURAS:
-        raise RuntimeError(
-            f"Plan inválido: {total_plan_infra} infraestructuras, "
-            f"esperado {TARGET_INFRAESTRUCTURAS}."
-        )
-
-    medidores_por_infra = construir_medidores_por_infra(TARGET_INFRAESTRUCTURAS)
-
-    random.shuffle(personas_ids)
-    persona_idx = 0
-    persona_cupo = random.randint(1, 5)
+    # Construimos una bolsa de propietarios para que una persona pueda tener 1..5
+    # infraestructuras, como indicó el docente. No se fuerza 1 persona = 1 medidor.
+    owner_pool: list[uuid.UUID] = []
+    while len(owner_pool) < TARGET_INFRAESTRUCTURAS:
+        shuffled = list(personas_ids)
+        random.shuffle(shuffled)
+        for pid in shuffled:
+            owner_pool.extend([pid] * random.randint(1, 5))
+            if len(owner_pool) >= TARGET_INFRAESTRUCTURAS:
+                break
+    random.shuffle(owner_pool)
+    owner_idx = 0
 
     def siguiente_persona() -> uuid.UUID:
-        nonlocal persona_idx, persona_cupo
+        nonlocal owner_idx
+        pid = owner_pool[owner_idx]
+        owner_idx += 1
+        return pid
 
-        if persona_idx >= len(personas_ids):
-            random.shuffle(personas_ids)
-            persona_idx = 0
+    mac_seq = 0x100000
 
-        persona_id = personas_ids[persona_idx]
-        persona_cupo -= 1
+    def gen_mac() -> str:
+        # Formato de 5 octetos para coincidir con el ejemplo del enunciado.
+        nonlocal mac_seq
+        mac_seq += 1
+        return "AB:CB:%02X:%02X:%02X" % ((mac_seq >> 16) & 0xFF, (mac_seq >> 8) & 0xFF, mac_seq & 0xFF)
 
-        if persona_cupo <= 0:
-            persona_idx += 1
-            persona_cupo = random.randint(1, 5)
+    def gen_serie() -> str:
+        return f"SN={random.randint(100, 999)}-{random.randint(10000, 99999)}-{random.randint(1000, 9999)}"
 
-        return persona_id
+    def tipo_infra_por_categoria(cat: str, educativas_restantes: list) -> int:
+        if cat == "P":
+            # Preferencial: colegios, hospitales, asilos, iglesias.
+            if educativas_restantes:
+                educativas_restantes.pop()
+                return 1
+            return random.choice([1, 2, 3, 4])
+        if cat == "S":
+            # Social: espacios y entidades públicas.
+            return random.choice([5, 6, 7])
+        if cat in {"C", "CE"}:
+            return random.choice([6, 11, 12])
+        if cat == "I":
+            return random.choice([11, 12])
+        # Residencial: vivienda, edificio, condominio o terreno.
+        return random.choices([9, 11, 12, 10, 8], weights=[72, 12, 10, 4, 2])[0]
 
     modelos_disponibles = [1, 2, 3, 4, 5]
     pesos_modelos = [0.30, 0.20, 0.20, 0.15, 0.15]
-
-    contrato_seq = 100_000_000
-    mac_seq = 1
-
     fecha_min = date(2020, 1, 1)
     fecha_max = date(2025, 3, 1)
     delta_dias = (fecha_max - fecha_min).days
-
-    educ_pendientes = list(unidades_educativas)
+    contrato_seq = 100_000_000
 
     infra_rows: list[tuple] = []
     med_rows: list[tuple] = []
+    infra_records: list[dict] = []
+    educ_pendientes = list(unidades_educativas)
+
+    def flush(force: bool = False) -> None:
+        nonlocal infra_rows, med_rows
+        if force or len(infra_rows) >= 5000:
+            if infra_rows:
+                bulk_insert(session, ps_infra, infra_rows, concurrency=CONCURRENCY)
+                infra_rows.clear()
+        if force or len(med_rows) >= 5000:
+            if med_rows:
+                bulk_insert(session, ps_med, med_rows, concurrency=CONCURRENCY)
+                med_rows.clear()
 
     total_infra = 0
     total_med = 0
 
-    pbar_infra = tqdm(total=TARGET_INFRAESTRUCTURAS, desc="infraestructuras")
-    pbar_med = tqdm(total=TARGET_MEDIDORES, desc="medidores")
-
-    for item in plan:
-        zona = item["zona"]
-        categoria = item["categoria"]
-        cantidad = item["cantidad"]
-        gateway_id = gateway_para_zona(zona)
-
-        for _ in range(cantidad):
-            infra_id = uuid.uuid4()
-            persona_id = siguiente_persona()
-
-            tipo_infra = 0
-            if categoria == "P" and educ_pendientes:
-                tipo_infra = 1
-                educ_pendientes.pop()
-            elif categoria in {"C", "CE"}:
-                tipo_infra = random.choice([3, 4, 5, 9, 10])
-            elif categoria == "I":
-                tipo_infra = 8
-            elif categoria == "S":
-                tipo_infra = random.choice([6, 7])
-
-            lat, lon = jitter(zona.centro_lat, zona.centro_lon, 0.008)
-
-            infra_rows.append(
-                (
-                    infra_id,
-                    persona_id,
-                    tipo_infra,
-                    zona.distrito_id,
-                    zona.zona_id,
-                    fake.street_address()[:80],
-                    lat,
-                    lon,
-                )
-            )
-
-            cantidad_medidores = medidores_por_infra[total_infra]
-
-            for _ in range(cantidad_medidores):
+    # 1) Base: 100 000 infraestructuras, una instalación vigente por infraestructura.
+    for zona in tqdm(zonas, desc="infraestructuras base"):
+        for cat in CATEGORIAS:
+            cantidad = zona.counts.get(cat, 0)
+            if cantidad <= 0:
+                continue
+            for _ in range(cantidad):
+                if total_infra >= TARGET_INFRAESTRUCTURAS:
+                    break
+                infra_id = uuid.uuid4()
+                persona_id = siguiente_persona()
+                tipo_infra = tipo_infra_por_categoria(cat, educ_pendientes)
+                center = zone_center(zona.distrito_id, zona.zona_id)
+                lat, lon = deterministic_point_near(center, str(infra_id), DEFAULT_INFRA_RADIUS_DEG)
+                contrato_seq += 1
+                contrato_actual = contrato_seq
+                gateway_id = random.choice(gateway_pool_for(zona.gateway_id))
                 med_id = uuid.uuid4()
                 modelo_id = random.choices(modelos_disponibles, pesos_modelos)[0]
-
                 estado_r = random.random()
-                if estado_r < 0.95:
-                    estado = "ACTIVO"
-                elif estado_r < 0.98:
-                    estado = "INACTIVO"
-                else:
-                    estado = "FUERA_SERVICIO"
+                estado = "ACTIVO" if estado_r < 0.955 else ("INACTIVO" if estado_r < 0.982 else "FUERA_SERVICIO")
+                motivo = "INSTALACION_IOT" if estado == "ACTIVO" else ("BAJA_ADMINISTRATIVA" if estado == "INACTIVO" else "SIN_REPORTE")
+                mlat, mlon = deterministic_point_near((lat, lon), str(med_id), DEFAULT_MEDIDOR_RADIUS_DEG)
+                fecha_inst = fecha_min + timedelta(days=random.randint(0, delta_dias))
 
-                mlat, mlon = jitter(lat, lon, 0.0008)
-                fecha_instalacion = fecha_min + timedelta(days=random.randint(0, delta_dias))
-
-                contrato_seq += 1
-
-                med_rows.append(
-                    (
-                        med_id,
-                        gen_mac(mac_seq),
-                        gen_serie(mac_seq),
-                        contrato_seq,
-                        infra_id,
-                        modelo_id,
-                        categoria,
-                        gateway_id,
-                        zona.distrito_id,
-                        zona.zona_id,
-                        mlat,
-                        mlon,
-                        fecha_instalacion,
-                        estado,
-                    )
-                )
-
-                mac_seq += 1
+                infra_rows.append((
+                    infra_id, persona_id, tipo_infra,
+                    zona.distrito_id, zona.zona_id,
+                    fake.street_address()[:80], lat, lon,
+                ))
+                med_rows.append((
+                    med_id, gen_mac(), gen_serie(), contrato_actual,
+                    infra_id, persona_id, modelo_id, cat, gateway_id,
+                    zona.distrito_id, zona.zona_id, mlat, mlon,
+                    fecha_inst, None, estado, motivo, None, estado == "ACTIVO",
+                ))
+                infra_records.append({
+                    "infraestructura_id": infra_id,
+                    "persona_id": persona_id,
+                    "distrito_id": zona.distrito_id,
+                    "zona_id": zona.zona_id,
+                    "lat": lat,
+                    "lon": lon,
+                    "cat": cat,
+                    "gateway_base": zona.gateway_id,
+                    "contrato": contrato_actual,
+                    "medidor_actual_id": med_id,
+                    "fecha_actual": fecha_inst,
+                })
+                total_infra += 1
                 total_med += 1
-                pbar_med.update(1)
+                flush()
+            if total_infra >= TARGET_INFRAESTRUCTURAS:
+                break
+        if total_infra >= TARGET_INFRAESTRUCTURAS:
+            break
 
-                if len(med_rows) >= BATCH_SIZE:
-                    bulk_insert(session, ps_med, med_rows, concurrency=CONCURRENCY)
-                    med_rows.clear()
-
-            total_infra += 1
-            pbar_infra.update(1)
-
-            if len(infra_rows) >= BATCH_SIZE:
-                bulk_insert(session, ps_infra, infra_rows, concurrency=CONCURRENCY)
-                infra_rows.clear()
-
-    if infra_rows:
-        bulk_insert(session, ps_infra, infra_rows, concurrency=CONCURRENCY)
-
-    if med_rows:
-        bulk_insert(session, ps_med, med_rows, concurrency=CONCURRENCY)
-
-    pbar_infra.close()
-    pbar_med.close()
+    # 2) Adicionales: 20 000 medidores asociados a infraestructuras ya existentes.
+    # Sirven para historial y para justificar que una persona/infraestructura puede
+    # tener más de un medidor por reemplazo, antigüedad, daño o multi-toma.
+    motivos_hist = [
+        ("REEMPLAZADO", "MEDIDOR_VIEJO"),
+        ("DAÑADO", "DAÑO_CAUDALIMETRO"),
+        ("RETIRADO", "CAMBIO_A_IOT"),
+        ("FUERA_SERVICIO", "SIN_REPORTE"),
+        ("ACTIVO", "SEGUNDA_TOMA_MISMA_INFRAESTRUCTURA"),
+    ]
+    pbar = tqdm(total=max(0, TARGET_MEDIDORES - total_med), desc="medidores adicionales")
+    while total_med < TARGET_MEDIDORES:
+        base = random.choice(infra_records)
+        estado, motivo = random.choices(motivos_hist, weights=[35, 20, 20, 15, 10])[0]
+        es_actual = estado == "ACTIVO"
+        contrato = base["contrato"] if not es_actual else contrato_seq + 1
+        if es_actual:
+            contrato_seq += 1
+        med_id = uuid.uuid4()
+        modelo_id = random.choices(modelos_disponibles, pesos_modelos)[0]
+        lat, lon = deterministic_point_near((base["lat"], base["lon"]), str(med_id), DEFAULT_MEDIDOR_RADIUS_DEG)
+        fecha_inst = fecha_min + timedelta(days=random.randint(0, delta_dias))
+        fecha_retiro = None
+        if not es_actual:
+            retiro_min = fecha_inst + timedelta(days=30)
+            retiro_max = date(2025, 5, 1)
+            if retiro_min < retiro_max:
+                fecha_retiro = retiro_min + timedelta(days=random.randint(0, (retiro_max - retiro_min).days))
+        med_rows.append((
+            med_id, gen_mac(), gen_serie(), contrato,
+            base["infraestructura_id"], base["persona_id"], modelo_id, base["cat"],
+            random.choice(gateway_pool_for(base["gateway_base"])),
+            base["distrito_id"], base["zona_id"], lat, lon,
+            fecha_inst, fecha_retiro, estado, motivo, base["medidor_actual_id"], es_actual,
+        ))
+        total_med += 1
+        pbar.update(1)
+        flush()
+    pbar.close()
+    flush(force=True)
 
     logger.success(f"Infraestructuras: {total_infra} | Medidores: {total_med}")
 
-
 def export_csvs(wb, distritos, zonas, tarifas, modelos, errores, tipos):
     SEEDS_DIR.mkdir(parents=True, exist_ok=True)
-
-    write_csv(
-        SEEDS_DIR / "sub_alcaldias.csv",
-        ["sub_alcaldia_id", "nombre"],
-        SUB_ALCALDIAS,
-    )
-
+    write_csv(SEEDS_DIR / "sub_alcaldias.csv", ["sub_alcaldia_id", "nombre"], SUB_ALCALDIAS)
     write_csv(
         SEEDS_DIR / "distritos.csv",
         ["distrito_id", "sub_alcaldia_id", "nombre", "habitantes"],
         [(d.distrito_id, d.sub_alcaldia_id, d.nombre, d.habitantes) for d in distritos],
     )
-
     write_csv(
         SEEDS_DIR / "zonas.csv",
         ["distrito_id", "zona_id", "nombre", "gateway_id", "habitantes", "total_medidores"],
-        [
-            (
-                z.distrito_id,
-                z.zona_id,
-                z.nombre,
-                gateway_para_zona(z),
-                z.habitantes,
-                z.total_medidores,
-            )
-            for z in zonas
-        ],
+        [(z.distrito_id, z.zona_id, z.nombre, z.gateway_id, z.habitantes, z.total_medidores) for z in zonas],
     )
-
-    write_csv(
-        SEEDS_DIR / "gateways.csv",
-        ["gateway_id", "nombre", "latitud", "longitud"],
-        gateways_32(),
-    )
-
+    write_csv(SEEDS_DIR / "gateways.csv", ["gateway_id", "nombre", "latitud", "longitud"], gateways())
     write_csv(
         SEEDS_DIR / "modelos.csv",
         ["modelo_id", "marca", "modelo", "conectividad", "aplicacion"],
         [(m.modelo_id, m.marca, m.modelo, m.conectividad, m.aplicacion) for m in modelos],
     )
-
     write_csv(
         SEEDS_DIR / "tarifas.csv",
-        [
-            "categoria",
-            "alias",
-            "fijo_m3",
-            "usd_mes",
-            "r_13_25",
-            "r_26_50",
-            "r_51_75",
-            "r_76_100",
-            "r_101_150",
-            "r_mas_151",
-            "descripcion",
-        ],
-        [
-            (
-                t.categoria,
-                t.alias,
-                str(t.fijo_m3),
-                str(t.usd_mes),
-                str(t.r_13_25),
-                str(t.r_26_50),
-                str(t.r_51_75),
-                str(t.r_76_100),
-                str(t.r_101_150),
-                str(t.r_mas_151),
-                t.descripcion,
-            )
-            for t in tarifas
-        ],
+        ["categoria", "alias", "fijo_m3", "usd_mes", "r_13_25", "r_26_50", "r_51_75",
+         "r_76_100", "r_101_150", "r_mas_151", "descripcion"],
+        [(t.categoria, t.alias, str(t.fijo_m3), str(t.usd_mes), str(t.r_13_25),
+          str(t.r_26_50), str(t.r_51_75), str(t.r_76_100), str(t.r_101_150),
+          str(t.r_mas_151), t.descripcion) for t in tarifas],
     )
-
     write_csv(SEEDS_DIR / "errores.csv", ["codigo", "descripcion"], errores)
-
     write_csv(
-        SEEDS_DIR / "tipos_infra.csv",
-        ["tipo_id", "descripcion"],
+        SEEDS_DIR / "tipos_infra.csv", ["tipo_id", "descripcion"],
         [(t.tipo_id, t.descripcion) for t in tipos],
     )
 
 
 def main():
     t0 = time.time()
-
     logger.info("=" * 60)
-    logger.info("SEMAPA Seeder")
+    logger.info("SEMAPA Seeder — Fase 2")
     logger.info("=" * 60)
 
     wb = load_workbook(EXCEL_PATH)
@@ -688,11 +464,7 @@ def main():
     export_csvs(wb, distritos, zonas, tarifas, modelos, errores, tipos)
 
     cluster, session = connect()
-
     try:
-        if RESET_BEFORE_SEED:
-            reset_tables(session)
-
         seed_catalogos(session, zonas, distritos, tarifas, modelos, errores, tipos)
         seed_usuarios(session)
         personas_ids = seed_personas(session)
