@@ -1,13 +1,17 @@
 tipo_id,descripcion
-1,Unidades Educativas
-2,Hospitales publicos
-3,"Asilos, conventos, iglesias."
-4,Centros de beneficencia o protección estatal.
-5,"Parques, jardines, áreas verdes."
-6,"Salones comunales, centros culturales."
-7,Policia Ejercito
-8,"Terrenos baldíos: Lotes sin construcción, sin uso aparente."
-9,Viviendas habitadas
-10,Viviendas no habitadas
-11,Edificios
-12,Condominios
+1,Educativo
+2,Industrial
+3,Comercial
+4,Mixto
+5,Salud
+6,Asilo / Convento / Iglesia
+7,Beneficencia
+8,Área verde / Parque
+9,Centro comunal / Cultural
+10,Infraestructura pública / Hidrante
+11,Terreno baldío
+12,Casa abandonada
+13,Edificio
+14,Condominio
+15,Residencial
+16,Comercial Especial

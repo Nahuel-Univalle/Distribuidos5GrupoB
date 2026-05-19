@@ -7,8 +7,8 @@ Pasos:
 2. Escribe CSVs limpios en /data/seeds/.
 3. Inserta catálogos en Cassandra.
 4. Genera 85 000 personas (80 k naturales + 5 k jurídicas).
-5. Distribuye 100 000+ infraestructuras según conteos por zona del Excel.
-6. Genera 120 000 medidores con coordenadas controladas por distrito/zona.
+5. Distribuye exactamente 100 000 infraestructuras según conteos por zona/tarifa del XLSX nuevo.
+6. Genera 120 000 medidores con coordenadas controladas por distrito/zona y plantillas de Catastro/Contratos/Medidores.
 7. Inserta 3 usuarios del sistema (alcaldía/gerencia/contabilidad) con bcrypt.
 
 Optimización:
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import time
 import uuid
 from datetime import date, datetime, timedelta
@@ -46,6 +47,11 @@ from excel_loader import (
     load_tipos_infra,
     load_unidades_educativas,
     load_workbook,
+    load_infraestructura_templates,
+    load_contratos_templates,
+    load_medidores_templates,
+    load_lecturas_templates,
+    make_catastro_number,
 )
 
 
@@ -215,7 +221,7 @@ def seed_personas(session, n_naturales: int = 80_000, n_juridicas: int = 5_000) 
     return ids
 
 
-def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_educativas):
+def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_educativas, infra_templates=None, contrato_templates=None, medidor_templates=None):
     """Genera exactamente 100 000 infraestructuras y 120 000 medidores.
 
     La hoja Distritos distribuye 100 000 registros base. En esta versión esos
@@ -227,7 +233,10 @@ def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_edu
     Relación defendible para exposición:
         persona -> infraestructura/servicio -> historial de medidores
     """
-    logger.info("Generando infraestructuras + medidores según consigna...")
+    logger.info("Generando infraestructuras + medidores según consigna y XLSX nuevo...")
+    infra_templates = list(infra_templates or [])
+    contrato_templates = list(contrato_templates or [])
+    medidor_templates = list(medidor_templates or [])
     ps_infra = session.prepare(
         "INSERT INTO infraestructuras (infraestructura_id, persona_id, tipo_infra, "
         "distrito_id, zona_id, direccion, latitud, longitud) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
@@ -259,13 +268,57 @@ def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_edu
         owner_idx += 1
         return pid
 
+    calles_base = [
+        "Av. América", "Av. Beijing", "Av. Blanco Galindo", "Av. Melchor Pérez",
+        "Av. Juan de la Rosa", "Av. Heroínas", "Av. Circunvalación", "Av. Villazón",
+        "Calle Baptista", "Calle Lanza", "Calle Sucre", "Calle Jordán",
+    ]
+
+    def template_infra() :
+        return random.choice(infra_templates) if infra_templates else None
+
+    def template_contrato():
+        return random.choice(contrato_templates) if contrato_templates else None
+
+    def template_medidor():
+        return random.choice(medidor_templates) if medidor_templates else None
+
+    def direccion_realista(zona_nombre: str, distrito_id: int, zona_id: int, infra_seq: int) -> str:
+        tpl = template_infra()
+        base_dir = tpl.direccion if tpl and tpl.direccion else f"{random.choice(calles_base)} N° {random.randint(100, 4999)}"
+        manzano = tpl.manzano if tpl and tpl.manzano is not None else random.randint(1, 999)
+        lote = tpl.lote if tpl and tpl.lote is not None else random.randint(1, 9999)
+        catastro = make_catastro_number(distrito_id, zona_id, manzano, lote, infra_seq % 1000)
+        return f"{base_dir[:55]} | Zona: {zona_nombre[:25]} | Catastro: {catastro}"[:120]
+
+    def estado_desde_contrato(default_estado: str) -> tuple[str, str, bool]:
+        tpl = template_contrato()
+        estado_cto = (tpl.estado_contrato if tpl else "").upper()
+        if estado_cto == "ACTIVO":
+            return "ACTIVO", "CONTRATO_ACTIVO", True
+        if estado_cto == "MOROSO":
+            return "ACTIVO", "CONTRATO_MOROSO", True
+        if estado_cto == "CORTADO":
+            return "FUERA_SERVICIO", "CORTE_SERVICIO", False
+        if default_estado == "ACTIVO":
+            return "ACTIVO", "INSTALACION_IOT", True
+        if default_estado == "INACTIVO":
+            return "INACTIVO", "BAJA_ADMINISTRATIVA", False
+        return "FUERA_SERVICIO", "SIN_REPORTE", False
+
     mac_seq = 0x100000
 
     def gen_mac() -> str:
-        # Formato de 5 octetos para coincidir con el ejemplo del enunciado.
+        # Usa ejemplos de la hoja Medidores cuando existan; si no, genera MAC estable.
         nonlocal mac_seq
+        tpl = template_medidor()
+        if tpl and tpl.medidor_iot and re.match(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", tpl.medidor_iot):
+            # Se mezcla con secuencia para evitar colisiones exactas.
+            mac_seq += 1
+            prefix = tpl.medidor_iot.split(":")[:3]
+            return ":".join(prefix + [f"{(mac_seq >> 16) & 0xFF:02X}", f"{(mac_seq >> 8) & 0xFF:02X}", f"{mac_seq & 0xFF:02X}"])
         mac_seq += 1
-        return "AB:CB:%02X:%02X:%02X" % ((mac_seq >> 16) & 0xFF, (mac_seq >> 8) & 0xFF, mac_seq & 0xFF)
+        return "AB:CB:%02X:%02X:%02X:%02X" % ((mac_seq >> 24) & 0xFF, (mac_seq >> 16) & 0xFF, (mac_seq >> 8) & 0xFF, mac_seq & 0xFF)
 
     def gen_serie() -> str:
         return f"SN={random.randint(100, 999)}-{random.randint(10000, 99999)}-{random.randint(1000, 9999)}"
@@ -333,21 +386,21 @@ def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_edu
                 med_id = uuid.uuid4()
                 modelo_id = random.choices(modelos_disponibles, pesos_modelos)[0]
                 estado_r = random.random()
-                estado = "ACTIVO" if estado_r < 0.955 else ("INACTIVO" if estado_r < 0.982 else "FUERA_SERVICIO")
-                motivo = "INSTALACION_IOT" if estado == "ACTIVO" else ("BAJA_ADMINISTRATIVA" if estado == "INACTIVO" else "SIN_REPORTE")
+                estado_default = "ACTIVO" if estado_r < 0.955 else ("INACTIVO" if estado_r < 0.982 else "FUERA_SERVICIO")
+                estado, motivo, es_actual_base = estado_desde_contrato(estado_default)
                 mlat, mlon = deterministic_point_near((lat, lon), str(med_id), DEFAULT_MEDIDOR_RADIUS_DEG)
                 fecha_inst = fecha_min + timedelta(days=random.randint(0, delta_dias))
 
                 infra_rows.append((
                     infra_id, persona_id, tipo_infra,
                     zona.distrito_id, zona.zona_id,
-                    fake.street_address()[:80], lat, lon,
+                    direccion_realista(zona.nombre, zona.distrito_id, zona.zona_id, total_infra), lat, lon,
                 ))
                 med_rows.append((
                     med_id, gen_mac(), gen_serie(), contrato_actual,
                     infra_id, persona_id, modelo_id, cat, gateway_id,
                     zona.distrito_id, zona.zona_id, mlat, mlon,
-                    fecha_inst, None, estado, motivo, None, estado == "ACTIVO",
+                    fecha_inst, None, estado, motivo, None, es_actual_base,
                 ))
                 infra_records.append({
                     "infraestructura_id": infra_id,
@@ -460,6 +513,10 @@ def main():
     errores = load_errores(wb)
     tipos = load_tipos_infra(wb)
     unidades = load_unidades_educativas(wb)
+    infra_templates = load_infraestructura_templates(wb)
+    contrato_templates = load_contratos_templates(wb)
+    medidor_templates = load_medidores_templates(wb)
+    _lectura_templates = load_lecturas_templates(wb)  # valida hoja nueva; seed_lecturas genera la serie masiva
 
     export_csvs(wb, distritos, zonas, tarifas, modelos, errores, tipos)
 
@@ -468,7 +525,7 @@ def main():
         seed_catalogos(session, zonas, distritos, tarifas, modelos, errores, tipos)
         seed_usuarios(session)
         personas_ids = seed_personas(session)
-        seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades)
+        seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades, infra_templates, contrato_templates, medidor_templates)
     finally:
         cluster.shutdown()
 

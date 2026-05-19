@@ -52,6 +52,14 @@ from tqdm import tqdm
 
 from cassandra_io import bulk_insert, connect
 
+# Las plantillas de la hoja Lecturas del XLSX nuevo no reemplazan la generación
+# masiva, pero se usan para inicializar acumulados y validar formato esperado.
+try:
+    from excel_loader import load_workbook, load_lecturas_templates
+except Exception:  # pragma: no cover - fallback si se ejecuta aislado
+    load_workbook = None
+    load_lecturas_templates = None
+
 
 @dataclass(frozen=True)
 class LecturasConfig:
@@ -152,8 +160,22 @@ def build_config() -> LecturasConfig:
 
 
 CFG = build_config()
+EXCEL_PATH = os.getenv("SEEDER_EXCEL", "/recursos/recursos.xlsx")
 random.seed(CFG.seed)
 BLOQUES = TODOS_BLOQUES[: CFG.por_dia]
+
+
+def cargar_plantillas_lecturas() -> list:
+    if not load_workbook or not load_lecturas_templates:
+        return []
+    try:
+        wb = load_workbook(EXCEL_PATH)
+        plantillas = load_lecturas_templates(wb)
+        logger.info(f"Hoja Lecturas XLSX validada: {len(plantillas)} ejemplos de formato")
+        return plantillas
+    except Exception as exc:
+        logger.warning(f"No se pudo usar la hoja Lecturas del XLSX: {exc}")
+        return []
 
 
 def consumo_para(cat: str, hora_int: int) -> int:
@@ -294,7 +316,12 @@ def main():
             "consumo_litros, categoria_tarifa) VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
 
-        acumulado: dict[uuid.UUID, int] = {m[0]: random.randint(100_000, 500_000) for m in medidores}
+        plantillas_lecturas = cargar_plantillas_lecturas()
+        valores_base = [int(p.lectura_actual) for p in plantillas_lecturas if getattr(p, "lectura_actual", 0)]
+        if valores_base:
+            acumulado: dict[uuid.UUID, int] = {m[0]: random.choice(valores_base) * 1000 + random.randint(0, 999) for m in medidores}
+        else:
+            acumulado = {m[0]: random.randint(100_000, 500_000) for m in medidores}
         rows_med: list[tuple] = []
         rows_zona: list[tuple] = []
         total = 0

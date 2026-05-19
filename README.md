@@ -86,6 +86,7 @@ docs/informe-tecnico.md
 docs/denis-seeder-mapa.md
 docs/denis-frontend-geodatos.md
 docs/denis-mapa-v14-practica5-cercado.md
+docs/denis-seeders-xlsx-v17.md
 ```
 
 ---
@@ -126,6 +127,7 @@ SEMAPA-Denis-patch/
 ├── services/
 │   ├── api/app/routers/mapa.py
 │   ├── seeder/seed.py
+│   ├── seeder/excel_loader.py
 │   ├── seeder/geo_reference.py
 │   ├── seeder/repair_geo.py
 │   ├── seeder/seed_lecturas.py
@@ -216,6 +218,37 @@ Ctrl + F5
 ```
 
 ---
+
+## 📄 XLSX nuevo soportado
+
+El seeder está actualizado para trabajar con el archivo nuevo:
+
+```text
+03 Practica 5 Recursos.xlsx
+```
+
+La copia usada por Docker debe quedar en la raíz como:
+
+```text
+Recursos Practica 5.xlsx
+```
+
+Hojas usadas por el seeder:
+
+```text
+Distritos
+Infraestructura
+Catastro
+Contratos
+Medidores
+Lecturas
+Tarifario
+ErroresIOT
+ModeloMedidores
+UnidadesEducativas
+```
+
+El loader ya no depende de posiciones antiguas en `Distritos`; detecta las columnas de tarifas `R1, R2, R3, R4, C, CE, I, P, S` y mantiene la clave territorial `distrito_id + zona_id`.
 
 ## 🌱 Cargar datos desde cero
 
@@ -366,7 +399,7 @@ El Word pide que el dashboard tenga:
 |---|---|
 | Totalizador de consumo | Incluido en dashboard/mapa. |
 | Cantidad de medidores | Incluido: 120.000 medidores. |
-| Población beneficiaria | Incluido: 85.000 registros base/personas. |
+| Población beneficiaria | Incluido desde XLSX nuevo: población territorial estimada en distritos/zonas + 85.000 clientes/personas simuladas. |
 | Mapa de calor o burbujas por distrito | Incluido: visualización Calor y Burbujas. |
 | Histograma por hora del consumo promedio | Incluido en panel inferior/lateral del mapa. |
 | Filtros por zona | Incluido. |
