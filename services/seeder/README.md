@@ -60,3 +60,17 @@ SELECT COUNT(*) FROM semapa.medidores;
 - Inserción por lotes de 5 000 filas
 - Lectura incremental acumulada (no se resetea) en time-series
 - Particionamiento por `(medidor_id, anio_mes)` → particiones < 100 MB
+
+## Ajuste para consigna SEMAPA
+
+Este seeder ahora interpreta la hoja `Distritos` como la distribución de **100.000 infraestructuras base**. Después crea **120.000 medidores** agregando 20.000 registros adicionales de historial o múltiples tomas por infraestructura.
+
+Motivos usados para medidores adicionales:
+
+- `MEDIDOR_VIEJO`
+- `DAÑO_CAUDALIMETRO`
+- `CAMBIO_A_IOT`
+- `SIN_REPORTE`
+- `SEGUNDA_TOMA_MISMA_INFRAESTRUCTURA`
+
+Esto permite defender que una persona o infraestructura pueda tener varios medidores sin eliminar registros antiguos.

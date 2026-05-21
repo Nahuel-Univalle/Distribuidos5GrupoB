@@ -63,7 +63,7 @@ def _connect() -> tuple[Cluster, Session]:
         contact_points=CASSANDRA_HOSTS,
         port=CASSANDRA_PORT,
         auth_provider=auth,
-        protocol_version=5,
+        protocol_version=4,
     )
     return cluster, cluster.connect(CASSANDRA_KEYSPACE)
 

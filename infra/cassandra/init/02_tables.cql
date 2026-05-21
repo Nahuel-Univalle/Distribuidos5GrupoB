@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS medidores (
     numero_serie text,              -- SN=254-41269-1411
     numero_contrato bigint,
     infraestructura_id uuid,
+    persona_id uuid,
     modelo_id int,
     categoria_tarifa text,          -- R1..R4, C, CE, I, P, S
     gateway_id int,
@@ -116,7 +117,11 @@ CREATE TABLE IF NOT EXISTS medidores (
     latitud double,
     longitud double,
     fecha_instalacion date,
-    estado text                     -- 'ACTIVO' | 'INACTIVO' | 'FUERA_SERVICIO'
+    fecha_retiro date,
+    estado text,                    -- ACTIVO | INACTIVO | FUERA_SERVICIO | REEMPLAZADO | DAÑADO | RETIRADO
+    motivo_estado text,             -- MEDIDOR_VIEJO, CAMBIO_A_IOT, DAÑO_CAUDALIMETRO, etc.
+    medidor_anterior_id uuid,       -- historial/reemplazo o medidor relacionado
+    es_medidor_actual boolean       -- false si queda solo como histórico
 );
 
 -- ============================================================================

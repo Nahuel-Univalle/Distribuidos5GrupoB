@@ -5,7 +5,7 @@
 
 .PHONY: help up down restart logs ps clean \
         cassandra-status cassandra-schema cassandra-cqlsh \
-        seed seed-lecturas \
+        seed seed-lecturas seed-lecturas-demo seed-lecturas-exposicion seed-lecturas-full \
         test test-api smoke smoke-1 smoke-2 smoke-3 smoke-4 \
         rabbitmq-ui mailhog \
         build pull lint format
@@ -65,8 +65,16 @@ cassandra-counts: ## Cuenta registros en tablas principales
 seed: ## Pobla catálogos, personas, infraestructuras, medidores
 	docker compose run --rm seeder python seed.py
 
-seed-lecturas: ## Pobla las ~15M lecturas históricas (lento)
-	docker compose run --rm seeder python seed_lecturas.py
+seed-lecturas: seed-lecturas-demo ## Alias seguro: carga rápida de lecturas para demo
+
+seed-lecturas-demo: ## Carga rápida de lecturas (recomendada para defensa, 1-2 min aprox.)
+	docker compose run --rm -e LECTURAS_PRESET=demo seeder python seed_lecturas.py
+
+seed-lecturas-exposicion: ## Carga media para exposición con más datos
+	docker compose run --rm -e LECTURAS_PRESET=exposicion seeder python seed_lecturas.py
+
+seed-lecturas-full: ## Carga completa real; puede tardar horas
+	docker compose run --rm -e LECTURAS_PRESET=full -e LECTURAS_CONFIRMAR_FULL=SI seeder python seed_lecturas.py
 
 # ===== Tests =====
 test: test-api ## Corre todos los tests

@@ -21,6 +21,8 @@ CREATE INDEX IF NOT EXISTS idx_medidor_categoria ON medidores (categoria_tarifa)
 CREATE INDEX IF NOT EXISTS idx_medidor_distrito ON medidores (distrito_id);
 CREATE INDEX IF NOT EXISTS idx_medidor_gateway ON medidores (gateway_id);
 CREATE INDEX IF NOT EXISTS idx_medidor_estado ON medidores (estado);
+CREATE INDEX IF NOT EXISTS idx_medidor_persona ON medidores (persona_id);
+CREATE INDEX IF NOT EXISTS idx_medidor_actual ON medidores (es_medidor_actual);
 
 -- Para listar facturas por persona
 CREATE INDEX IF NOT EXISTS idx_factura_persona ON facturas (persona_id);

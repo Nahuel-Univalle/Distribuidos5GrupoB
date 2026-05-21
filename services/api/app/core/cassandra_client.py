@@ -60,7 +60,7 @@ class CassandraClient:
                 EXEC_PROFILE_DEFAULT: profile,
                 "analytics": profile_one,
             },
-            protocol_version=5,
+            protocol_version=4,
         )
         self.session = self.cluster.connect(settings.CASSANDRA_KEYSPACE)
         logger.info(f"Cassandra conectado a {hosts}:{settings.CASSANDRA_PORT}")
