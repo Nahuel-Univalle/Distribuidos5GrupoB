@@ -86,7 +86,6 @@ docs/informe-tecnico.md
 docs/denis-seeder-mapa.md
 docs/denis-frontend-geodatos.md
 docs/denis-mapa-v14-practica5-cercado.md
-docs/denis-seeders-xlsx-v17.md
 ```
 
 ---
@@ -127,7 +126,6 @@ SEMAPA-Denis-patch/
 ├── services/
 │   ├── api/app/routers/mapa.py
 │   ├── seeder/seed.py
-│   ├── seeder/excel_loader.py
 │   ├── seeder/geo_reference.py
 │   ├── seeder/repair_geo.py
 │   ├── seeder/seed_lecturas.py
@@ -218,37 +216,6 @@ Ctrl + F5
 ```
 
 ---
-
-## 📄 XLSX nuevo soportado
-
-El seeder está actualizado para trabajar con el archivo nuevo:
-
-```text
-03 Practica 5 Recursos.xlsx
-```
-
-La copia usada por Docker debe quedar en la raíz como:
-
-```text
-Recursos Practica 5.xlsx
-```
-
-Hojas usadas por el seeder:
-
-```text
-Distritos
-Infraestructura
-Catastro
-Contratos
-Medidores
-Lecturas
-Tarifario
-ErroresIOT
-ModeloMedidores
-UnidadesEducativas
-```
-
-El loader ya no depende de posiciones antiguas en `Distritos`; detecta las columnas de tarifas `R1, R2, R3, R4, C, CE, I, P, S` y mantiene la clave territorial `distrito_id + zona_id`.
 
 ## 🌱 Cargar datos desde cero
 
@@ -399,7 +366,7 @@ El Word pide que el dashboard tenga:
 |---|---|
 | Totalizador de consumo | Incluido en dashboard/mapa. |
 | Cantidad de medidores | Incluido: 120.000 medidores. |
-| Población beneficiaria | Incluido desde XLSX nuevo: población territorial estimada en distritos/zonas + 85.000 clientes/personas simuladas. |
+| Población beneficiaria | Incluido: 85.000 registros base/personas. |
 | Mapa de calor o burbujas por distrito | Incluido: visualización Calor y Burbujas. |
 | Histograma por hora del consumo promedio | Incluido en panel inferior/lateral del mapa. |
 | Filtros por zona | Incluido. |
@@ -697,3 +664,63 @@ http://localhost/mapa
 ## 📄 Licencia
 
 Uso académico — Práctica 5 Cassandra, Sistemas Distribuidos.
+
+
+---
+
+## Actualización v18 — PDF y CSV nuevos de Práctica 5
+
+Esta versión queda alineada con el PDF actualizado de la práctica: **Plataforma de Big Data Distribuida para la Gestión Inteligente del Consumo de Agua en SEMAPA**.
+
+Cambios principales del módulo Denis:
+
+- La base se puebla desde los CSV exportados del Excel nuevo ubicados en `data/external/`.
+- Se trabajan **80.000 infraestructuras**, **100.000 contratos**, **120.000 medidores IoT**, **14 radiobases LoRaWAN**, **54 zonas/subdistritos** y **9 categorías tarifarias**.
+- Se agregó soporte para contratos en Cassandra: `contratos` y `contratos_por_estado`.
+- `seed_lecturas.py` usa primero `data/external/lecturas_iot.csv`, que trae lecturas de febrero, marzo y abril.
+- `excel_loader.py` lee la hoja `Distritos` por encabezados para soportar el Excel nuevo.
+- Se mantiene `repair_geo.py` para garantizar que infraestructura, medidores y gateways queden dentro de Cercado.
+
+Archivos externos incorporados:
+
+```text
+data/external/infraestructuras_cochabamba.csv
+data/external/contratos_agua.csv
+data/external/medidores_iot.csv
+data/external/lecturas_iot.csv
+```
+
+Comandos recomendados después de aplicar esta versión:
+
+```powershell
+docker compose build web api-1 api-2 seeder
+docker compose up -d
+```
+
+Si la base ya tenía datos antiguos o duplicados, limpiar primero:
+
+```powershell
+docker exec semapa-cassandra-1 cqlsh -e "USE semapa; TRUNCATE lecturas_raw; TRUNCATE lecturas_por_medidor; TRUNCATE lecturas_por_zona_dia; TRUNCATE cobertura_gateway; TRUNCATE facturas; TRUNCATE facturas_por_periodo; TRUNCATE contratos; TRUNCATE contratos_por_estado; TRUNCATE medidores; TRUNCATE infraestructuras; TRUNCATE personas; TRUNCATE usuarios_sistema; TRUNCATE distritos; TRUNCATE zonas; TRUNCATE gateways; TRUNCATE modelos_medidor; TRUNCATE tarifas; TRUNCATE errores_iot; TRUNCATE tipos_infraestructura; TRUNCATE sub_alcaldias;"
+```
+
+Poblar y refrescar:
+
+```powershell
+docker compose run --rm seeder python seed.py
+docker compose run --rm seeder python repair_geo.py
+docker compose run --rm seeder python seed_lecturas.py
+docker exec semapa-redis redis-cli FLUSHALL
+docker compose restart api-1 api-2 web nginx
+```
+
+Validación esperada:
+
+```text
+infraestructuras = 80.000
+contratos = 100.000
+medidores = 120.000
+gateways = 14
+tarifas = 9
+```
+
+Más detalle en `docs/denis-v18-pdf-csv-actualizado.md`.

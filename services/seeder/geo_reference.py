@@ -216,7 +216,11 @@ GATEWAY_SAFE_POINTS: dict[int, tuple[float, float]] = {
 
 
 def gateway_safe_point(gateway_id: int) -> tuple[float, float]:
-    gid = int(gateway_id)
+    # PDF actualizado: 14 radiobases. Si llega un ID antiguo 15..32, se
+    # normaliza a 1..14 para evitar puntos fuera del mapa.
+    gid = int(gateway_id or 1)
+    if not 1 <= gid <= 14:
+        gid = ((gid - 1) % 14) + 1
     point = GATEWAY_SAFE_POINTS.get(gid, DISTRICT_FALLBACK.get(((gid - 1) % 15) + 1, (-17.414, -66.161)))
     if not is_inside_cercado(point[0], point[1]):
         return (-17.414, -66.161)

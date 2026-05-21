@@ -7,8 +7,8 @@ Pasos:
 2. Escribe CSVs limpios en /data/seeds/.
 3. Inserta catálogos en Cassandra.
 4. Genera 85 000 personas (80 k naturales + 5 k jurídicas).
-5. Distribuye exactamente 100 000 infraestructuras según conteos por zona/tarifa del XLSX nuevo.
-6. Genera 120 000 medidores con coordenadas controladas por distrito/zona y plantillas de Catastro/Contratos/Medidores.
+5. Distribuye 100 000+ infraestructuras según conteos por zona del Excel.
+6. Genera 120 000 medidores con coordenadas controladas por distrito/zona.
 7. Inserta 3 usuarios del sistema (alcaldía/gerencia/contabilidad) con bcrypt.
 
 Optimización:
@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import os
 import random
-import re
 import time
 import uuid
 from datetime import date, datetime, timedelta
@@ -47,11 +46,13 @@ from excel_loader import (
     load_tipos_infra,
     load_unidades_educativas,
     load_workbook,
-    load_infraestructura_templates,
-    load_contratos_templates,
-    load_medidores_templates,
-    load_lecturas_templates,
-    make_catastro_number,
+)
+from external_sources import (
+    ExternalSources,
+    categoria_tarifa,
+    load_external_sources,
+    normalize_mac,
+    stable_int,
 )
 
 
@@ -66,8 +67,10 @@ Faker.seed(SEED)
 
 
 CATEGORIAS = ["R1", "R2", "R3", "R4", "C", "CE", "I", "P", "S"]
-TARGET_INFRAESTRUCTURAS = int(os.getenv("SEED_TARGET_INFRA", "100000"))
+TARGET_INFRAESTRUCTURAS = int(os.getenv("SEED_TARGET_INFRA", "80000"))
 TARGET_MEDIDORES = int(os.getenv("SEED_TARGET_MEDIDORES", "120000"))
+TARGET_CONTRATOS = int(os.getenv("SEED_TARGET_CONTRATOS", "100000"))
+USE_EXTERNAL_CSV = os.getenv("SEED_USE_EXTERNAL_CSV", "auto").strip().lower()  # auto|si|no
 
 
 def _bs(text: str) -> bytes:
@@ -221,7 +224,244 @@ def seed_personas(session, n_naturales: int = 80_000, n_juridicas: int = 5_000) 
     return ids
 
 
-def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_educativas, infra_templates=None, contrato_templates=None, medidor_templates=None):
+
+def _split_nombre(full_name: str) -> tuple[str, str]:
+    parts = (full_name or "").strip().split()
+    if not parts:
+        return "SIN", "NOMBRE"
+    if len(parts) == 1:
+        return parts[0][:60], ""
+    return parts[0][:60], " ".join(parts[1:])[:90]
+
+
+def _doc_key(documento: str) -> str:
+    return (documento or "").strip().upper()
+
+
+def _zona_id_por_nombre(zonas, distrito_id: int, zona_nombre: str, seed: str) -> int:
+    """Busca zona por nombre dentro del distrito; si el CSV trae nombre inconsistente, usa fallback estable."""
+    zname = (zona_nombre or "").strip().upper()
+    candidatas = [z for z in zonas if int(z.distrito_id) == int(distrito_id)]
+    for z in candidatas:
+        if z.nombre.strip().upper() == zname:
+            return int(z.zona_id)
+    # Coincidencia parcial para tildes/variantes simples.
+    for z in candidatas:
+        if zname and (zname in z.nombre.strip().upper() or z.nombre.strip().upper() in zname):
+            return int(z.zona_id)
+    if candidatas:
+        return int(candidatas[stable_int(seed, len(candidatas))].zona_id)
+    return 1
+
+
+def seed_personas_external(session, fuentes: ExternalSources) -> dict[str, uuid.UUID]:
+    """Inserta 80k naturales + 5k jurídicas, usando titulares/propietarios del CSV."""
+    logger.info("Generando personas desde CSV externos: 80.000 naturales + 5.000 jurídicas...")
+    ps = session.prepare(
+        "INSERT INTO personas (persona_id, tipo, documento, nombre, apellidos, razon_social, "
+        "email, telefono, fecha_registro) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    # Prioridad: propietarios de infraestructuras y titulares de contratos.
+    titulares: dict[str, str] = {}
+    for infra in fuentes.infraestructuras:
+        if infra.ci:
+            titulares.setdefault(_doc_key(infra.ci), infra.propietario)
+    for c in fuentes.contratos:
+        if c.ci_titular:
+            titulares.setdefault(_doc_key(c.ci_titular), c.titular)
+
+    items = list(titulares.items())[:80_000]
+    doc_to_persona: dict[str, uuid.UUID] = {}
+    rows: list[tuple] = []
+    fecha_min = datetime(2018, 1, 1)
+    rango_dias = (datetime.utcnow() - fecha_min).days
+
+    pbar = tqdm(total=85_000, desc="personas csv")
+    for doc, fullname in items:
+        pid = uuid.uuid4()
+        nombre, apellidos = _split_nombre(fullname)
+        doc_to_persona[doc] = pid
+        rows.append((
+            pid, "NATURAL", doc[:30], nombre, apellidos, None,
+            f"{doc.replace(' ', '').lower()}@correo.demo", f"7{random.randint(1000000, 9999999)}",
+            fecha_min + timedelta(days=random.randint(0, rango_dias)),
+        ))
+        if len(rows) >= 5000:
+            bulk_insert(session, ps, rows, concurrency=CONCURRENCY)
+            pbar.update(len(rows)); rows.clear()
+
+    # Si el CSV trae menos de 80k documentos, completar sintéticamente.
+    while len(doc_to_persona) < 80_000:
+        pid = uuid.uuid4()
+        doc = f"AUTO-{len(doc_to_persona)+1:08d}"
+        doc_to_persona[doc] = pid
+        rows.append((
+            pid, "NATURAL", doc, fake.first_name(), fake.last_name() + " " + fake.last_name(), None,
+            fake.email(), f"7{random.randint(1000000, 9999999)}",
+            fecha_min + timedelta(days=random.randint(0, rango_dias)),
+        ))
+        if len(rows) >= 5000:
+            bulk_insert(session, ps, rows, concurrency=CONCURRENCY)
+            pbar.update(len(rows)); rows.clear()
+
+    for i in range(5_000):
+        pid = uuid.uuid4()
+        nit = f"NIT-{100000000+i}"
+        doc_to_persona[nit] = pid
+        rows.append((
+            pid, "JURIDICA", nit, None, None, fake.company(),
+            f"contacto{i}@empresa.demo", f"4{random.randint(1000000, 9999999)}",
+            fecha_min + timedelta(days=random.randint(0, rango_dias)),
+        ))
+        if len(rows) >= 5000:
+            bulk_insert(session, ps, rows, concurrency=CONCURRENCY)
+            pbar.update(len(rows)); rows.clear()
+    if rows:
+        bulk_insert(session, ps, rows, concurrency=CONCURRENCY)
+        pbar.update(len(rows)); rows.clear()
+    pbar.close()
+    logger.success(f"Personas insertadas: {len(doc_to_persona):,}")
+    return doc_to_persona
+
+
+def seed_external_csvs(session, zonas, fuentes: ExternalSources) -> None:
+    """Pobla 80k infraestructuras, 100k contratos y 120k medidores desde los CSV nuevos."""
+    logger.info("Usando CSV externos del Excel actualizado para infraestructuras/contratos/medidores...")
+    if len(fuentes.infraestructuras) < TARGET_INFRAESTRUCTURAS:
+        raise RuntimeError(f"CSV de infraestructuras trae {len(fuentes.infraestructuras)}; se requieren {TARGET_INFRAESTRUCTURAS}")
+    if len(fuentes.contratos) < TARGET_CONTRATOS:
+        raise RuntimeError(f"CSV de contratos trae {len(fuentes.contratos)}; se requieren {TARGET_CONTRATOS}")
+    if len(fuentes.medidores) < TARGET_MEDIDORES:
+        raise RuntimeError(f"CSV de medidores trae {len(fuentes.medidores)}; se requieren {TARGET_MEDIDORES}")
+
+    doc_to_persona = seed_personas_external(session, fuentes)
+    personas_fallback = list(doc_to_persona.values())
+
+    ps_infra = session.prepare(
+        "INSERT INTO infraestructuras (infraestructura_id, persona_id, tipo_infra, "
+        "distrito_id, zona_id, direccion, latitud, longitud) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    ps_med = session.prepare(
+        "INSERT INTO medidores (medidor_id, mac, numero_serie, numero_contrato, "
+        "infraestructura_id, persona_id, modelo_id, categoria_tarifa, gateway_id, distrito_id, zona_id, "
+        "latitud, longitud, fecha_instalacion, fecha_retiro, estado, motivo_estado, "
+        "medidor_anterior_id, es_medidor_actual) VALUES "
+        "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    ps_contrato = session.prepare(
+        "INSERT INTO contratos (numero_contrato, numero_contrato_txt, numero_catastro, persona_id, "
+        "infraestructura_id, medidor_id, categoria_tarifa, categoria, fecha_contrato, estado_contrato, "
+        "diametro_conexion, tipo_servicio, distrito_id, zona_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    ps_contrato_estado = session.prepare(
+        "INSERT INTO contratos_por_estado (estado_contrato, distrito_id, numero_contrato, categoria_tarifa) "
+        "VALUES (?, ?, ?, ?)"
+    )
+
+    infra_by_catastro: dict[str, dict] = {}
+    infra_rows: list[tuple] = []
+    for infra in tqdm(fuentes.infraestructuras[:TARGET_INFRAESTRUCTURAS], desc="infra csv"):
+        iid = uuid.uuid4()
+        doc = _doc_key(infra.ci)
+        persona_id = doc_to_persona.get(doc) or personas_fallback[stable_int(infra.numero_catastro, len(personas_fallback))]
+        zona_id = _zona_id_por_nombre(zonas, infra.distrito_id, infra.zona_nombre, infra.numero_catastro)
+        center = zone_center(infra.distrito_id, zona_id)
+        lat, lon = deterministic_point_near(center, f"infra:{infra.numero_catastro}", DEFAULT_INFRA_RADIUS_DEG)
+        infra_rows.append((iid, persona_id, infra.tipo_infra, infra.distrito_id, zona_id, infra.direccion[:80], lat, lon))
+        infra_by_catastro[infra.numero_catastro] = {
+            "infraestructura_id": iid,
+            "persona_id": persona_id,
+            "distrito_id": infra.distrito_id,
+            "zona_id": zona_id,
+            "lat": lat,
+            "lon": lon,
+        }
+        if len(infra_rows) >= 5000:
+            bulk_insert(session, ps_infra, infra_rows, concurrency=CONCURRENCY); infra_rows.clear()
+    if infra_rows:
+        bulk_insert(session, ps_infra, infra_rows, concurrency=CONCURRENCY)
+
+    med_by_mac = {m.mac: m for m in fuentes.medidores[:TARGET_MEDIDORES]}
+    medidores_usados: set[str] = set()
+    med_rows: list[tuple] = []
+    contrato_rows: list[tuple] = []
+    contrato_estado_rows: list[tuple] = []
+    med_uuid_by_mac: dict[str, uuid.UUID] = {}
+
+    for contrato in tqdm(fuentes.contratos[:TARGET_CONTRATOS], desc="contratos+medidores"):
+        infra_ref = infra_by_catastro.get(contrato.numero_catastro)
+        if infra_ref is None:
+            # No debería pasar con los CSV actuales, pero evitamos romper.
+            infra_ref = random.choice(list(infra_by_catastro.values()))
+        med_src = med_by_mac.get(contrato.medidor_iot)
+        if med_src is None:
+            continue
+        medidores_usados.add(med_src.mac)
+        mid = uuid.uuid4()
+        med_uuid_by_mac[med_src.mac] = mid
+        cat = contrato.subcategoria
+        estado = med_src.estado if contrato.estado_contrato == "ACTIVO" else "INACTIVO"
+        motivo = med_src.motivo_estado if estado != "INACTIVO" else contrato.estado_contrato
+        es_actual = estado == "ACTIVO"
+        lat, lon = deterministic_point_near((infra_ref["lat"], infra_ref["lon"]), f"med:{med_src.mac}", DEFAULT_MEDIDOR_RADIUS_DEG)
+        gateway_id = gateway_pool_for(((infra_ref["distrito_id"] * 37 + infra_ref["zona_id"] * 11) % 14) + 1)[0]
+        serie = f"SN={stable_int(med_src.mac, 900, 100)}-{stable_int(med_src.mac+':a', 90000, 10000)}-{stable_int(med_src.mac+':b', 9000, 1000)}"
+        fecha_retiro = med_src.fecha_desinstalacion if not es_actual else None
+        med_rows.append((
+            mid, med_src.mac, serie, contrato.numero_contrato,
+            infra_ref["infraestructura_id"], infra_ref["persona_id"], med_src.modelo_id, cat, gateway_id,
+            infra_ref["distrito_id"], infra_ref["zona_id"], lat, lon,
+            med_src.fecha_instalacion, fecha_retiro, estado, motivo, None, es_actual,
+        ))
+        contrato_rows.append((
+            contrato.numero_contrato, contrato.numero_contrato_txt, contrato.numero_catastro,
+            infra_ref["persona_id"], infra_ref["infraestructura_id"], mid, cat, contrato.categoria,
+            contrato.fecha_contrato, contrato.estado_contrato, contrato.diametro_conexion,
+            contrato.tipo_servicio, infra_ref["distrito_id"], infra_ref["zona_id"],
+        ))
+        contrato_estado_rows.append((contrato.estado_contrato, infra_ref["distrito_id"], contrato.numero_contrato, cat))
+        if len(med_rows) >= 5000:
+            bulk_insert(session, ps_med, med_rows, concurrency=CONCURRENCY); med_rows.clear()
+            bulk_insert(session, ps_contrato, contrato_rows, concurrency=CONCURRENCY); contrato_rows.clear()
+            bulk_insert(session, ps_contrato_estado, contrato_estado_rows, concurrency=CONCURRENCY); contrato_estado_rows.clear()
+    if med_rows:
+        bulk_insert(session, ps_med, med_rows, concurrency=CONCURRENCY)
+    if contrato_rows:
+        bulk_insert(session, ps_contrato, contrato_rows, concurrency=CONCURRENCY)
+    if contrato_estado_rows:
+        bulk_insert(session, ps_contrato_estado, contrato_estado_rows, concurrency=CONCURRENCY)
+
+    # 20k medidores restantes: históricos, mantenimiento, reacondicionados o sin contrato activo.
+    extras = [m for m in fuentes.medidores[:TARGET_MEDIDORES] if m.mac not in medidores_usados]
+    base_infras = list(infra_by_catastro.values())
+    med_rows = []
+    for med_src in tqdm(extras, desc="medidores sin contrato activo"):
+        infra_ref = random.choice(base_infras)
+        mid = uuid.uuid4()
+        cat = random.choice(CATEGORIAS)
+        lat, lon = deterministic_point_near((infra_ref["lat"], infra_ref["lon"]), f"med-extra:{med_src.mac}", DEFAULT_MEDIDOR_RADIUS_DEG)
+        gateway_id = gateway_pool_for(((infra_ref["distrito_id"] * 37 + infra_ref["zona_id"] * 11) % 14) + 1)[0]
+        serie = f"SN={stable_int(med_src.mac, 900, 100)}-{stable_int(med_src.mac+':a', 90000, 10000)}-{stable_int(med_src.mac+':b', 9000, 1000)}"
+        extra_estado = med_src.estado if med_src.estado != "ACTIVO" else "REEMPLAZADO"
+        extra_motivo = med_src.motivo_estado if med_src.estado != "ACTIVO" else "SIN_CONTRATO_ACTIVO"
+        med_rows.append((
+            mid, med_src.mac, serie, 0,
+            infra_ref["infraestructura_id"], infra_ref["persona_id"], med_src.modelo_id, cat, gateway_id,
+            infra_ref["distrito_id"], infra_ref["zona_id"], lat, lon,
+            med_src.fecha_instalacion, med_src.fecha_desinstalacion, extra_estado, extra_motivo,
+            None, False,
+        ))
+        if len(med_rows) >= 5000:
+            bulk_insert(session, ps_med, med_rows, concurrency=CONCURRENCY); med_rows.clear()
+    if med_rows:
+        bulk_insert(session, ps_med, med_rows, concurrency=CONCURRENCY)
+
+    logger.success(
+        f"CSV actualizado cargado: {TARGET_INFRAESTRUCTURAS:,} infraestructuras, "
+        f"{TARGET_CONTRATOS:,} contratos y {TARGET_MEDIDORES:,} medidores IoT con 14 radiobases"
+    )
+
+def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_educativas):
     """Genera exactamente 100 000 infraestructuras y 120 000 medidores.
 
     La hoja Distritos distribuye 100 000 registros base. En esta versión esos
@@ -233,10 +473,7 @@ def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_edu
     Relación defendible para exposición:
         persona -> infraestructura/servicio -> historial de medidores
     """
-    logger.info("Generando infraestructuras + medidores según consigna y XLSX nuevo...")
-    infra_templates = list(infra_templates or [])
-    contrato_templates = list(contrato_templates or [])
-    medidor_templates = list(medidor_templates or [])
+    logger.info("Generando infraestructuras + medidores según consigna...")
     ps_infra = session.prepare(
         "INSERT INTO infraestructuras (infraestructura_id, persona_id, tipo_infra, "
         "distrito_id, zona_id, direccion, latitud, longitud) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
@@ -268,57 +505,13 @@ def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_edu
         owner_idx += 1
         return pid
 
-    calles_base = [
-        "Av. América", "Av. Beijing", "Av. Blanco Galindo", "Av. Melchor Pérez",
-        "Av. Juan de la Rosa", "Av. Heroínas", "Av. Circunvalación", "Av. Villazón",
-        "Calle Baptista", "Calle Lanza", "Calle Sucre", "Calle Jordán",
-    ]
-
-    def template_infra() :
-        return random.choice(infra_templates) if infra_templates else None
-
-    def template_contrato():
-        return random.choice(contrato_templates) if contrato_templates else None
-
-    def template_medidor():
-        return random.choice(medidor_templates) if medidor_templates else None
-
-    def direccion_realista(zona_nombre: str, distrito_id: int, zona_id: int, infra_seq: int) -> str:
-        tpl = template_infra()
-        base_dir = tpl.direccion if tpl and tpl.direccion else f"{random.choice(calles_base)} N° {random.randint(100, 4999)}"
-        manzano = tpl.manzano if tpl and tpl.manzano is not None else random.randint(1, 999)
-        lote = tpl.lote if tpl and tpl.lote is not None else random.randint(1, 9999)
-        catastro = make_catastro_number(distrito_id, zona_id, manzano, lote, infra_seq % 1000)
-        return f"{base_dir[:55]} | Zona: {zona_nombre[:25]} | Catastro: {catastro}"[:120]
-
-    def estado_desde_contrato(default_estado: str) -> tuple[str, str, bool]:
-        tpl = template_contrato()
-        estado_cto = (tpl.estado_contrato if tpl else "").upper()
-        if estado_cto == "ACTIVO":
-            return "ACTIVO", "CONTRATO_ACTIVO", True
-        if estado_cto == "MOROSO":
-            return "ACTIVO", "CONTRATO_MOROSO", True
-        if estado_cto == "CORTADO":
-            return "FUERA_SERVICIO", "CORTE_SERVICIO", False
-        if default_estado == "ACTIVO":
-            return "ACTIVO", "INSTALACION_IOT", True
-        if default_estado == "INACTIVO":
-            return "INACTIVO", "BAJA_ADMINISTRATIVA", False
-        return "FUERA_SERVICIO", "SIN_REPORTE", False
-
     mac_seq = 0x100000
 
     def gen_mac() -> str:
-        # Usa ejemplos de la hoja Medidores cuando existan; si no, genera MAC estable.
+        # Formato de 5 octetos para coincidir con el ejemplo del enunciado.
         nonlocal mac_seq
-        tpl = template_medidor()
-        if tpl and tpl.medidor_iot and re.match(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", tpl.medidor_iot):
-            # Se mezcla con secuencia para evitar colisiones exactas.
-            mac_seq += 1
-            prefix = tpl.medidor_iot.split(":")[:3]
-            return ":".join(prefix + [f"{(mac_seq >> 16) & 0xFF:02X}", f"{(mac_seq >> 8) & 0xFF:02X}", f"{mac_seq & 0xFF:02X}"])
         mac_seq += 1
-        return "AB:CB:%02X:%02X:%02X:%02X" % ((mac_seq >> 24) & 0xFF, (mac_seq >> 16) & 0xFF, (mac_seq >> 8) & 0xFF, mac_seq & 0xFF)
+        return "AB:CB:%02X:%02X:%02X" % ((mac_seq >> 16) & 0xFF, (mac_seq >> 8) & 0xFF, mac_seq & 0xFF)
 
     def gen_serie() -> str:
         return f"SN={random.randint(100, 999)}-{random.randint(10000, 99999)}-{random.randint(1000, 9999)}"
@@ -386,21 +579,21 @@ def seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades_edu
                 med_id = uuid.uuid4()
                 modelo_id = random.choices(modelos_disponibles, pesos_modelos)[0]
                 estado_r = random.random()
-                estado_default = "ACTIVO" if estado_r < 0.955 else ("INACTIVO" if estado_r < 0.982 else "FUERA_SERVICIO")
-                estado, motivo, es_actual_base = estado_desde_contrato(estado_default)
+                estado = "ACTIVO" if estado_r < 0.955 else ("INACTIVO" if estado_r < 0.982 else "FUERA_SERVICIO")
+                motivo = "INSTALACION_IOT" if estado == "ACTIVO" else ("BAJA_ADMINISTRATIVA" if estado == "INACTIVO" else "SIN_REPORTE")
                 mlat, mlon = deterministic_point_near((lat, lon), str(med_id), DEFAULT_MEDIDOR_RADIUS_DEG)
                 fecha_inst = fecha_min + timedelta(days=random.randint(0, delta_dias))
 
                 infra_rows.append((
                     infra_id, persona_id, tipo_infra,
                     zona.distrito_id, zona.zona_id,
-                    direccion_realista(zona.nombre, zona.distrito_id, zona.zona_id, total_infra), lat, lon,
+                    fake.street_address()[:80], lat, lon,
                 ))
                 med_rows.append((
                     med_id, gen_mac(), gen_serie(), contrato_actual,
                     infra_id, persona_id, modelo_id, cat, gateway_id,
                     zona.distrito_id, zona.zona_id, mlat, mlon,
-                    fecha_inst, None, estado, motivo, None, es_actual_base,
+                    fecha_inst, None, estado, motivo, None, estado == "ACTIVO",
                 ))
                 infra_records.append({
                     "infraestructura_id": infra_id,
@@ -513,10 +706,6 @@ def main():
     errores = load_errores(wb)
     tipos = load_tipos_infra(wb)
     unidades = load_unidades_educativas(wb)
-    infra_templates = load_infraestructura_templates(wb)
-    contrato_templates = load_contratos_templates(wb)
-    medidor_templates = load_medidores_templates(wb)
-    _lectura_templates = load_lecturas_templates(wb)  # valida hoja nueva; seed_lecturas genera la serie masiva
 
     export_csvs(wb, distritos, zonas, tarifas, modelos, errores, tipos)
 
@@ -524,8 +713,16 @@ def main():
     try:
         seed_catalogos(session, zonas, distritos, tarifas, modelos, errores, tipos)
         seed_usuarios(session)
-        personas_ids = seed_personas(session)
-        seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades, infra_templates, contrato_templates, medidor_templates)
+
+        fuentes = load_external_sources(load_lecturas_csv=False)
+        usar_csv = (USE_EXTERNAL_CSV == "si") or (USE_EXTERNAL_CSV == "auto" and fuentes.complete_for_base_seed)
+        if usar_csv:
+            logger.info("SEED_USE_EXTERNAL_CSV activo: se poblará con CSV del Excel actualizado.")
+            seed_external_csvs(session, zonas, fuentes)
+        else:
+            logger.warning("No se encontraron CSV externos completos; se usará seeder sintético anterior.")
+            personas_ids = seed_personas(session)
+            seed_infraestructuras_y_medidores(session, zonas, personas_ids, unidades)
     finally:
         cluster.shutdown()
 

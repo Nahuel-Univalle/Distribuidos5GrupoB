@@ -227,6 +227,11 @@ services:
     environment:
       - SEEDER_EXCEL=/recursos/recursos.xlsx
       - SEEDS_DIR=/data/seeds
+      - SEED_USE_EXTERNAL_CSV=auto
+      - SEED_TARGET_INFRA=80000
+      - SEED_TARGET_CONTRATOS=100000
+      - SEED_TARGET_MEDIDORES=120000
+      - LECTURAS_SOURCE=csv
     volumes:
       - ./data:/data
       - "./Recursos Practica 5.xlsx:/recursos/recursos.xlsx:ro"

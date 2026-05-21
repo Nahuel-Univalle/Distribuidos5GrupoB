@@ -1,39 +1,30 @@
-"""Excel -> catálogos y plantillas para el seeder SEMAPA.
+"""Excel → estructuras tipadas para el seeder.
 
-Compatible con la versión nueva del archivo:
-    03 Practica 5 Recursos.xlsx
+Lee Recursos_Practica_5.xlsx (montado vía volumen Docker en /recursos/recursos.xlsx)
+y devuelve catálogos limpios: sub_alcaldias, distritos, zonas, gateways, modelos,
+tarifas, errores, tipos de infraestructura, unidades educativas, infraestructuras
+públicas.
 
-Hojas soportadas:
-- Distritos: distribución territorial y cuotas por tarifa.
-- Infraestructura: plantillas catastrales/direcciones/uso de suelo.
-- Catastro: referencia del formato de número catastral.
-- Contratos: plantillas de contratos, estados y subcategorías.
-- Medidores: plantillas de MAC, estado y tipo de medidor.
-- Lecturas: plantillas de lectura anterior/actual, radiobase y fecha de pago.
-- Tarifario, ErroresIOT, ModeloMedidores, UnidadesEducativas.
-
-Reglas importantes:
-- No leer la hoja Distritos por posiciones rígidas antiguas. El Excel nuevo tiene
-  18 columnas y las tarifas empiezan en R1..S.
-- La clave territorial correcta es (distrito_id, zona_id). zona_id solo se repite.
-- Las coordenadas oficiales de demo vienen de geo_reference.py, no de las muestras
-  catastrales, para evitar puntos fuera de Cercado.
+Diseño:
+- Lectura una sola vez con openpyxl (data_only=True para resolver fórmulas).
+- Forward-fill manual de columnas jerárquicas (sub_alcaldia/distrito).
+- Coordenadas DMS → decimales para gateways.
+- Datos canonicalizados a int/Decimal/str (sin NaN sueltos).
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Iterable
 
 import openpyxl
 from loguru import logger
-
 from geo_reference import gateway_safe_point, zone_center
 
 
+# ----- Sub-alcaldías (fijas, derivadas del Excel + enunciado) -----
 SUB_ALCALDIAS: list[tuple[int, str]] = [
     (1, "TUNARI"),
     (2, "MOLLE"),
@@ -44,6 +35,7 @@ SUB_ALCALDIAS: list[tuple[int, str]] = [
 ]
 SUB_ALCALDIA_ID = {n.upper(): i for i, n in SUB_ALCALDIAS}
 
+# Fallback territorial para evitar errores por celdas combinadas del Excel.
 SUB_ALCALDIA_BY_DISTRITO: dict[int, int] = {
     1: 1, 2: 1, 13: 1,
     3: 2, 4: 2,
@@ -53,76 +45,46 @@ SUB_ALCALDIA_BY_DISTRITO: dict[int, int] = {
     10: 6, 11: 6, 12: 6,
 }
 
-BASE_GATEWAYS: dict[str, tuple[int, float, float]] = {
-    "LoRaWan-Teleferico": (1, -17.389222, -66.141722),
-    "LoRaWan-ParqueVial": (9, -17.381000, -66.153361),
-    "LoRaWan-ParqueLincon": (17, -17.369861, -66.176389),
-    "LoRaWan-Petrolera": (25, -17.444083, -66.140694),
+# PDF actualizado: la red LoRaWAN trabaja con 14 radiobases.
+# Se mantienen alias de los nombres anteriores para compatibilidad con el Excel.
+BASE_GATEWAYS: dict[str, int] = {
+    "LoRaWan-Teleferico": 1,
+    "LoRaWan-ParqueVial": 4,
+    "LoRaWan-ParqueLincon": 8,
+    "LoRaWan-Petrolera": 12,
 }
-GATEWAY_NAME_TO_ID = {name: start for name, (start, _lat, _lon) in BASE_GATEWAYS.items()}
-TARIFA_HEADERS = ["R1", "R2", "R3", "R4", "C", "CE", "I", "P", "S"]
+
+GATEWAY_NAME_TO_ID = {name: gid for name, gid in BASE_GATEWAYS.items()}
 
 
-def clean_text(value: Any) -> str:
-    if value is None:
-        return ""
-    return re.sub(r"\s+", " ", str(value).replace("\xa0", " ")).strip()
+def gateway_id_from_name(raw_name: str | None, distrito_id: int | None = None, zona_id: int | None = None) -> int:
+    """Devuelve radiobase 1..14.
 
-
-def norm_key(value: Any) -> str:
-    return clean_text(value).upper().replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
-
-
-def _as_int(x: Any) -> int | None:
-    if x is None or x == "":
-        return None
-    try:
-        return int(float(str(x).replace(",", ".")))
-    except (TypeError, ValueError):
-        return None
-
-
-def _as_decimal(x: Any) -> Decimal:
-    if x is None or x == "":
-        return Decimal("0")
-    return Decimal(str(x).replace(",", "."))
-
-
-def _parse_date(value: Any) -> datetime | None:
-    if value is None or value == "":
-        return None
-    if isinstance(value, datetime):
-        return value
-    text = clean_text(value)
-    for fmt in ("%m/%d/%y", "%m/%d/%Y", "%d/%m/%y", "%d/%m/%Y", "%m/%d/%y %H:%M", "%d/%m/%y %H:%M"):
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
-            pass
-    return None
-
-
-def gateway_id_from_name(raw_name: str | None) -> int:
-    text = clean_text(raw_name)
+    El PDF actualizado cambió de 32 a 14 radiobases. Si el Excel trae nombres
+    antiguos, se mapean a una radiobase cercana. Si no hay nombre, se reparte
+    de forma determinística por distrito/zona para no dejar todo en RB01.
+    """
+    text = (raw_name or "").strip()
     for name, gid in GATEWAY_NAME_TO_ID.items():
-        if name.upper() in text.upper():
+        if name in text:
             return gid
-    return 1
+    try:
+        d = int(distrito_id or 1)
+        z = int(zona_id or 1)
+        return ((d * 37 + z * 11) % 14) + 1
+    except Exception:
+        return 1
 
 
 def gateway_pool_for(gateway_id: int) -> list[int]:
-    gid = int(gateway_id or 1)
-    if 1 <= gid <= 8:
-        start = 1
-    elif 9 <= gid <= 16:
-        start = 9
-    elif 17 <= gid <= 24:
-        start = 17
-    elif 25 <= gid <= 32:
-        start = 25
-    else:
-        start = 1
-    return list(range(start, start + 8))
+    """La versión actual usa 14 radiobases físicas, sin expansión a 32."""
+    try:
+        gid = int(gateway_id)
+    except Exception:
+        gid = 1
+    if not 1 <= gid <= 14:
+        gid = ((gid - 1) % 14) + 1
+    return [gid]
 
 
 @dataclass
@@ -139,14 +101,14 @@ class Zona:
     zona_id: int
     nombre: str
     gateway_id: int
-    habitantes: int
-    counts: dict[str, int] = field(default_factory=dict)
+    habitantes: int  # cuota proporcional
+    counts: dict[str, int] = field(default_factory=dict)  # categoría → cantidad
     centro_lat: float = -17.39
     centro_lon: float = -66.15
 
     @property
     def total_medidores(self) -> int:
-        return sum(int(v or 0) for v in self.counts.values())
+        return sum(self.counts.values())
 
 
 @dataclass
@@ -189,55 +151,69 @@ class UnidadEducativa:
     educacion: str
 
 
-@dataclass
-class InfraestructuraTemplate:
-    numero_catastro: str
-    propietario: str
-    ci: str
-    direccion: str
-    zona: str
-    distrito_id: int | None
-    manzano: int | None
-    lote: int | None
-    superficie_terreno: int | None
-    area_construida: int | None
-    uso_suelo: str
-    matricula_ddrr: str
-    valor_catastral: Decimal
-    impuesto_anual: Decimal
+# Coordenadas aproximadas (centroide) por distrito de Cochabamba urbano.
+
+# Centros corregidos por clave compuesta distrito_id + zona_id.
+# Importante: zona_id solo no alcanza porque hay IDs repetidos entre distritos.
+ZONE_CENTERS_BY_KEY: dict[tuple[int, int], tuple[float, float]] = {
+    (1, 24): (-17.3826, -66.1320), (1, 25): (-17.3862, -66.1195), (1, 26): (-17.3920, -66.1085),
+    (2, 1): (-17.3890, -66.1780), (2, 3): (-17.3868, -66.1680), (2, 22): (-17.3730, -66.1805),
+    (2, 23): (-17.3770, -66.1690), (2, 24): (-17.3825, -66.1608), (2, 27): (-17.3845, -66.1515),
+    (13, 35): (-17.3365, -66.1460),
+    (3, 2): (-17.3970, -66.1840), (3, 21): (-17.3910, -66.1940), (3, 37): (-17.4050, -66.1840),
+    (4, 10): (-17.4160, -66.1800), (4, 27): (-17.4080, -66.1900), (4, 28): (-17.4180, -66.1960),
+    (5, 14): (-17.4330, -66.1700), (5, 15): (-17.4270, -66.1580), (5, 17): (-17.4370, -66.1520),
+    (5, 18): (-17.4340, -66.0990), (5, 20): (-17.4400, -66.1070), (8, 34): (-17.4480, -66.1110),
+    (8, 35): (-17.4580, -66.1020), (8, 36): (-17.4660, -66.0940),
+    (6, 16): (-17.4130, -66.1450), (6, 32): (-17.4160, -66.1510),
+    (7, 19): (-17.4220, -66.1330), (7, 20): (-17.4310, -66.1300), (14, 34): (-17.4300, -66.1200),
+    (9, 29): (-17.4640, -66.1910), (9, 30): (-17.4720, -66.2050), (9, 31): (-17.4600, -66.2190),
+    (9, 35): (-17.4800, -66.1970), (9, 36): (-17.4640, -66.2290),
+    (15, 32): (-17.4600, -66.1390), (15, 33): (-17.4740, -66.1410), (15, 34): (-17.4690, -66.1260),
+    (15, 35): (-17.4850, -66.1300), (15, 36): (-17.4930, -66.1510), (15, 37): (-17.4980, -66.1670), (15, 38): (-17.5050, -66.1850),
+    (10, 7): (-17.3980, -66.1590), (10, 8): (-17.3980, -66.1490), (10, 11): (-17.4100, -66.1610),
+    (10, 12): (-17.4100, -66.1490), (11, 9): (-17.4080, -66.1380), (11, 13): (-17.4140, -66.1440),
+    (12, 2): (-17.3930, -66.1730), (12, 3): (-17.3890, -66.1670), (12, 4): (-17.3870, -66.1590),
+    (12, 5): (-17.3990, -66.1590), (12, 6): (-17.4030, -66.1690),
+}
+
+DISTRITO_CENTROIDES: dict[int, tuple[float, float]] = {
+    1: (-17.378, -66.150),
+    2: (-17.395, -66.155),
+    3: (-17.401, -66.160),
+    4: (-17.405, -66.140),
+    5: (-17.412, -66.142),
+    6: (-17.418, -66.158),
+    7: (-17.423, -66.165),
+    8: (-17.430, -66.155),
+    9: (-17.438, -66.148),
+    10: (-17.445, -66.130),
+    11: (-17.452, -66.140),
+    12: (-17.395, -66.180),
+    13: (-17.410, -66.190),
+    14: (-17.420, -66.200),
+    15: (-17.460, -66.170),
+}
 
 
-@dataclass
-class ContratoTemplate:
-    numero_catastro: str
-    titular: str
-    ci_titular: str
-    categoria: str
-    subcategoria: str
-    medidor_iot: str
-    fecha_contrato: datetime | None
-    estado_contrato: str
-    diametro_conexion: str
-    tipo_servicio: str
+def _parse_dms(dms: str) -> float | None:
+    m = re.match(r"(\d+)°(\d+)'(\d+\.?\d*)\"([NSEW])", dms.strip())
+    if not m:
+        return None
+    deg, mn, sec, hemi = m.groups()
+    val = int(deg) + int(mn) / 60 + float(sec) / 3600
+    if hemi in ("S", "W"):
+        val = -val
+    return val
 
 
-@dataclass
-class MedidorTemplate:
-    medidor_iot: str
-    fecha_instalacion: datetime | None
-    fecha_desinstalacion: datetime | None
-    estado: str
-    tipo_medidor_id: int | None
-
-
-@dataclass
-class LecturaTemplate:
-    medidor_iot: str
-    lectura_anterior: int
-    lectura_actual: int
-    fecha_hora: datetime | None
-    radiobase: int | None
-    fecha_pago: datetime | None
+def _as_int(x) -> int | None:
+    if x is None:
+        return None
+    try:
+        return int(float(x))
+    except (TypeError, ValueError):
+        return None
 
 
 def load_workbook(path: str | Path) -> openpyxl.Workbook:
@@ -248,266 +224,228 @@ def load_workbook(path: str | Path) -> openpyxl.Workbook:
     return openpyxl.load_workbook(p, data_only=True, read_only=False)
 
 
-def _sheet(wb: openpyxl.Workbook, *names: str):
-    lower = {s.lower(): s for s in wb.sheetnames}
-    for name in names:
-        found = lower.get(name.lower())
-        if found:
-            return wb[found]
-    raise KeyError(f"No se encontró ninguna hoja: {names}. Disponibles: {wb.sheetnames}")
-
-
 def load_distritos_zonas(wb: openpyxl.Workbook) -> tuple[list[Distrito], list[Zona]]:
-    ws = _sheet(wb, "Distritos")
-    # Buscar fila de encabezados donde estén R1..S y Total. En el Excel nuevo es fila 2.
-    header_row = 2
-    headers = [clean_text(c.value) for c in ws[header_row]]
-    tariff_cols: dict[str, int] = {}
-    for idx, h in enumerate(headers):
-        hu = h.upper()
-        if hu in TARIFA_HEADERS:
-            tariff_cols[hu] = idx
-    if set(TARIFA_HEADERS) - set(tariff_cols):
-        raise ValueError(f"La hoja Distritos no tiene todas las tarifas {TARIFA_HEADERS}. Headers={headers}")
+    """Lee la hoja Distritos del Excel nuevo sin depender de posiciones fijas.
 
-    # Posiciones estables del Excel nuevo.
-    COL_SUB = 0
-    COL_DIST = 1
-    COL_ZONA = 2
-    COL_NOMBRE_ZONA = 3
-    COL_GATEWAY = 4
-    COL_ZONE_POP = 6     # población estimada de la zona (suma ≈ población beneficiaria)
-    COL_SUB_HAB = 7      # total por subalcaldía, solo primera fila de cada subalcaldía
-    COL_TOTAL = next((i for i, h in enumerate(headers) if h.upper() == "TOTAL"), 17)
+    El Excel actualizado agregó columnas intermedias. Por eso se detectan
+    encabezados por nombre: R1, R2, R3, R4, C, CE, I, P, S, Total, HABITANTES.
+    """
+    ws = wb["Distritos"]
+    headers = [str(c.value or "").strip().upper() for c in ws[2]]
+
+    def col(name: str, default: int | None = None) -> int:
+        name_u = name.upper()
+        for idx, h in enumerate(headers):
+            if h == name_u or name_u in h:
+                return idx
+        if default is not None:
+            return default
+        raise KeyError(f"No se encontró columna {name!r} en Distritos: {headers}")
+
+    idx_sub = 0
+    idx_dist = 1
+    idx_zona = col("SUB-DISTRITO", 2)
+    idx_nombre = col("ZONA", 3)
+    idx_hab = col("HABITANTES", 7)
+    idx_gateway = 4  # sin encabezado explícito en la versión actual
+    cat_cols = {cat: headers.index(cat) for cat in ["R1", "R2", "R3", "R4", "C", "CE", "I", "P", "S"]}
 
     distritos: dict[int, Distrito] = {}
     zonas: list[Zona] = []
-    cur_sub = ""
+    cur_sub: str | None = None
     cur_dist: int | None = None
-    cur_habitantes = 0
-    habitantes_por_distrito: dict[int, int] = {}
 
-    for row_idx, row in enumerate(ws.iter_rows(min_row=header_row + 1, values_only=True), start=header_row + 1):
-        if not row or all(v is None for v in row):
+    for row_idx, row in enumerate(ws.iter_rows(min_row=3, values_only=True), start=3):
+        if row is None or all(c is None for c in row):
             continue
-        if row[COL_SUB] is not None:
-            cur_sub = clean_text(row[COL_SUB]).upper()
-        if row[COL_DIST] is not None:
-            cur_dist = _as_int(row[COL_DIST])
-            cur_habitantes = _as_int(row[COL_SUB_HAB] if len(row) > COL_SUB_HAB else None) or cur_habitantes
+        if row[idx_sub]:
+            cur_sub = str(row[idx_sub]).strip().upper()
+        if row[idx_dist] is not None:
+            cur_dist = _as_int(row[idx_dist])
             if cur_dist is not None and cur_dist not in distritos:
                 distritos[cur_dist] = Distrito(
                     distrito_id=cur_dist,
-                    sub_alcaldia_id=SUB_ALCALDIA_BY_DISTRITO.get(cur_dist, SUB_ALCALDIA_ID.get(cur_sub.replace("\n", " "), 1)),
+                    sub_alcaldia_id=SUB_ALCALDIA_BY_DISTRITO.get(cur_dist, SUB_ALCALDIA_ID.get(cur_sub or "", 1)),
                     nombre=f"DISTRITO {cur_dist}",
-                    habitantes=cur_habitantes,
+                    habitantes=_as_int(row[idx_hab]) or 0,
                 )
-        elif cur_dist is not None and len(row) > COL_SUB_HAB and row[COL_SUB_HAB] is not None and distritos[cur_dist].habitantes == 0:
-            distritos[cur_dist].habitantes = _as_int(row[COL_SUB_HAB]) or 0
+        if cur_dist is not None and row[idx_hab] and cur_dist in distritos and distritos[cur_dist].habitantes == 0:
+            distritos[cur_dist].habitantes = _as_int(row[idx_hab]) or 0
 
-        zona_id = _as_int(row[COL_ZONA] if len(row) > COL_ZONA else None)
-        zona_nombre = clean_text(row[COL_NOMBRE_ZONA] if len(row) > COL_NOMBRE_ZONA else None)
-        if cur_dist is None or zona_id is None or not zona_nombre:
+        zid = _as_int(row[idx_zona])
+        zona_nom = row[idx_nombre]
+        if zid is None or not zona_nom or cur_dist is None:
             continue
+        counts = {cat: _as_int(row[i]) or 0 for cat, i in cat_cols.items()}
+        gw_name = row[idx_gateway] if idx_gateway < len(row) else None
+        gw_id = gateway_id_from_name(str(gw_name).strip() if gw_name else "", cur_dist, zid)
+        centro = zone_center(cur_dist, zid)
+        zonas.append(Zona(
+            distrito_id=cur_dist,
+            zona_id=zid,
+            nombre=str(zona_nom).strip(),
+            gateway_id=gw_id,
+            habitantes=0,
+            counts=counts,
+            centro_lat=centro[0],
+            centro_lon=centro[1],
+        ))
 
-        counts = {cat: _as_int(row[col] if col < len(row) else None) or 0 for cat, col in tariff_cols.items()}
-        total_col = _as_int(row[COL_TOTAL] if COL_TOTAL < len(row) else None) or 0
-        zona_habitantes = _as_int(row[COL_ZONE_POP] if len(row) > COL_ZONE_POP else None) or 0
-        habitantes_por_distrito[cur_dist] = habitantes_por_distrito.get(cur_dist, 0) + zona_habitantes
-        if not any(counts.values()) and total_col == 0:
-            continue
-        if total_col and sum(counts.values()) != total_col:
-            logger.warning(
-                f"Fila {row_idx}: suma tarifas={sum(counts.values())} != Total={total_col} "
-                f"en D{cur_dist}/Z{zona_id} {zona_nombre}"
-            )
-
-        gw_id = gateway_id_from_name(row[COL_GATEWAY] if len(row) > COL_GATEWAY else None)
-        centro = zone_center(cur_dist, zona_id)
-        zonas.append(
-            Zona(
-                distrito_id=cur_dist,
-                zona_id=zona_id,
-                nombre=zona_nombre,
-                gateway_id=gw_id,
-                habitantes=zona_habitantes,
-                counts={cat: counts.get(cat, 0) for cat in TARIFA_HEADERS},
-                centro_lat=centro[0],
-                centro_lon=centro[1],
-            )
-        )
-
-    # Habitantes del distrito = suma de habitantes de sus zonas. Si una zona no trae
-    # población, se reparte proporcionalmente desde el total de subalcaldía disponible.
     for dist in distritos.values():
         zonas_d = [z for z in zonas if z.distrito_id == dist.distrito_id]
-        suma_zonas = sum(z.habitantes for z in zonas_d)
-        if suma_zonas > 0:
-            dist.habitantes = suma_zonas
-        elif dist.habitantes and zonas_d:
-            total = sum(z.total_medidores for z in zonas_d) or 1
-            for z in zonas_d:
-                z.habitantes = int(dist.habitantes * z.total_medidores / total)
+        total = sum(z.total_medidores for z in zonas_d) or 1
+        for z in zonas_d:
+            z.habitantes = int(dist.habitantes * z.total_medidores / total)
 
-    total_base = sum(z.total_medidores for z in zonas)
-    logger.info(f"Distritos cargados: {len(distritos)} | Zonas: {len(zonas)} | Total base={total_base:,}")
-    if total_base != 100000:
-        logger.warning(f"La hoja Distritos no suma 100.000; suma={total_base:,}")
-    return sorted(distritos.values(), key=lambda d: d.distrito_id), zonas
+    logger.info(f"Distritos cargados: {len(distritos)} | Zonas: {len(zonas)} | Total distribución={sum(z.total_medidores for z in zonas):,}")
+    return list(distritos.values()), zonas
 
 
 def load_tarifas(wb: openpyxl.Workbook) -> list[TarifaCat]:
-    ws = _sheet(wb, "Tarifario")
+    ws = wb["Tarifario"]
+    rows = list(ws.iter_rows(min_row=3, max_row=12, values_only=True))
     out: list[TarifaCat] = []
-    cur_alias = ""
-    for row in ws.iter_rows(min_row=3, values_only=True):
-        if not row or all(v is None for v in row):
+    cur_alias = None
+    for row in rows:
+        if row is None or all(c is None for c in row):
             continue
-        alias_txt, cat, fijo, usd, r1, r2, r3, r4, r5, r6, desc = (list(row) + [None] * 11)[:11]
+        alias_txt, cat, fijo, usd, r1, r2, r3, r4, r5, r6, desc = row[:11]
         if alias_txt:
-            cur_alias = clean_text(alias_txt)
-        cat_txt = clean_text(cat).upper()
-        if not cat_txt or cat_txt not in TARIFA_HEADERS:
+            cur_alias = str(alias_txt).strip()
+        if not cat:
             continue
-        out.append(TarifaCat(cat_txt, cur_alias, _as_decimal(fijo), _as_decimal(usd), _as_decimal(r1), _as_decimal(r2), _as_decimal(r3), _as_decimal(r4), _as_decimal(r5), _as_decimal(r6), clean_text(desc)))
+        out.append(
+            TarifaCat(
+                categoria=str(cat).strip().upper(),
+                alias=cur_alias or "",
+                fijo_m3=Decimal(str(fijo or 0)),
+                usd_mes=Decimal(str(usd or 0)),
+                r_13_25=Decimal(str(r1 or 0)),
+                r_26_50=Decimal(str(r2 or 0)),
+                r_51_75=Decimal(str(r3 or 0)),
+                r_76_100=Decimal(str(r4 or 0)),
+                r_101_150=Decimal(str(r5 or 0)),
+                r_mas_151=Decimal(str(r6 or 0)),
+                descripcion=str(desc or "").strip(),
+            )
+        )
+    # Garantizar las 9 categorías
+    needed = {"R1", "R2", "R3", "R4", "C", "CE", "I", "P", "S"}
     found = {t.categoria for t in out}
-    missing = set(TARIFA_HEADERS) - found
+    missing = needed - found
     if missing:
-        raise ValueError(f"Faltan tarifas en Tarifario: {sorted(missing)}")
+        logger.warning(f"Tarifas faltantes en Excel: {missing}. Se añadirán fallback.")
+        fallbacks = {
+            "S": TarifaCat("S", "Social", Decimal("8"), Decimal("0.67"), Decimal("0.5"),
+                           Decimal("0.6"), Decimal("0.7"), Decimal("0.8"), Decimal("0.9"),
+                           Decimal("1.0"), "Tarifa social, predios estatales con fines sociales"),
+        }
+        for m in missing:
+            if m in fallbacks:
+                out.append(fallbacks[m])
     logger.info(f"Tarifas: {len(out)} categorías")
     return out
 
 
 def load_modelos(wb: openpyxl.Workbook) -> list[ModeloMedidor]:
-    ws = _sheet(wb, "ModeloMedidores")
+    ws = wb["ModeloMedidores"]
     out: list[ModeloMedidor] = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        mid = _as_int(row[0] if row else None)
+        if not row or row[0] is None:
+            continue
+        tid, marca, modelo, conect, app, _ = row[:6]
+        mid = _as_int(tid)
         if mid is None:
             continue
-        out.append(ModeloMedidor(mid, clean_text(row[1]), clean_text(row[2]), clean_text(row[3]), clean_text(row[4])))
+        out.append(
+            ModeloMedidor(
+                modelo_id=mid,
+                marca=str(marca or "").strip(),
+                modelo=str(modelo or "").strip(),
+                conectividad=str(conect or "").strip(),
+                aplicacion=str(app or "").strip(),
+            )
+        )
     logger.info(f"Modelos medidor: {len(out)}")
     return out
 
 
 def load_errores(wb: openpyxl.Workbook) -> list[tuple[int, str]]:
-    ws = _sheet(wb, "ErroresIOT")
+    ws = wb["ErroresIOT"]
     out: list[tuple[int, str]] = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        code = _as_int(row[0] if row else None)
+        if not row or row[0] is None:
+            continue
+        code = _as_int(row[0])
         if code is None:
             continue
-        out.append((code, clean_text(row[1])))
+        out.append((code, str(row[1] or "").strip()))
     logger.info(f"Errores IoT: {len(out)}")
     return out
 
 
 def load_tipos_infra(wb: openpyxl.Workbook) -> list[TipoInfra]:
-    # El XLSX nuevo ya no usa la hoja antigua Infraestructuras como catálogo;
-    # trae Infraestructura como ejemplos. Extraemos usos de suelo y completamos
-    # con tipos que el enunciado pide.
-    base = [
-        "Educativo", "Salud", "Asilo / Convento / Iglesia", "Beneficencia",
-        "Área verde / Parque", "Centro comunal / Cultural", "Infraestructura pública / Hidrante",
-        "Terreno baldío", "Casa abandonada", "Edificio", "Condominio", "Residencial",
-        "Comercial", "Comercial Especial", "Industrial", "Mixto",
+    """Carga tipos de infraestructura.
+
+    El Excel actualizado reemplazó la hoja de tipos por una hoja de
+    infraestructura catastral masiva. Por compatibilidad se mantienen los 12
+    tipos usados por el proyecto y la práctica.
+    """
+    if "Infraestructuras" in wb.sheetnames:
+        ws = wb["Infraestructuras"]
+        out: list[TipoInfra] = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row:
+                continue
+            tid = _as_int(row[0])
+            if tid is None:
+                continue
+            out.append(TipoInfra(tipo_id=tid, descripcion=str(row[1] or "").strip()))
+        if out:
+            logger.info(f"Tipos infraestructura: {len(out)}")
+            return out
+    out = [
+        TipoInfra(1, "Unidades Educativas"),
+        TipoInfra(2, "Hospitales públicos / centros de salud"),
+        TipoInfra(3, "Asilos, conventos, iglesias"),
+        TipoInfra(4, "Centros de beneficencia o protección estatal"),
+        TipoInfra(5, "Parques, jardines, áreas verdes"),
+        TipoInfra(6, "Salones comunales, centros culturales"),
+        TipoInfra(7, "Policía / Ejército / entidad pública"),
+        TipoInfra(8, "Terrenos baldíos"),
+        TipoInfra(9, "Viviendas habitadas"),
+        TipoInfra(10, "Viviendas no habitadas"),
+        TipoInfra(11, "Edificios"),
+        TipoInfra(12, "Condominios / uso mixto"),
     ]
-    usos: list[str] = []
-    try:
-        ws = _sheet(wb, "Infraestructura")
-        headers = [norm_key(c.value) for c in ws[1]]
-        col_uso = headers.index("USO_SUELO") if "USO_SUELO" in headers else None
-        if col_uso is not None:
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                val = clean_text(row[col_uso] if col_uso < len(row) else None)
-                if val and val not in usos:
-                    usos.append(val)
-    except Exception:
-        pass
-    merged = []
-    for v in usos + base:
-        if v and v not in merged:
-            merged.append(v)
-    out = [TipoInfra(i + 1, desc) for i, desc in enumerate(merged)]
-    logger.info(f"Tipos infraestructura: {len(out)}")
+    logger.info(f"Tipos infraestructura fallback: {len(out)}")
     return out
 
 
 def load_unidades_educativas(wb: openpyxl.Workbook) -> list[UnidadEducativa]:
-    ws = _sheet(wb, "UnidadesEducativas")
+    ws = wb["UnidadesEducativas"]
     out: list[UnidadEducativa] = []
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row or row[1] is None:
             continue
-        out.append(UnidadEducativa(clean_text(row[1]), clean_text(row[2]), clean_text(row[0]), clean_text(row[7]), clean_text(row[8]), clean_text(row[3])))
+        out.append(
+            UnidadEducativa(
+                codigo=str(row[1]),
+                nombre=str(row[2] or "").strip(),
+                distrito_txt=str(row[0] or "").strip(),
+                zona_txt=str(row[7] or "").strip(),
+                direccion=str(row[8] or "").strip(),
+                educacion=str(row[3] or "").strip(),
+            )
+        )
     logger.info(f"Unidades educativas: {len(out)}")
     return out
 
 
-def load_infraestructura_templates(wb: openpyxl.Workbook) -> list[InfraestructuraTemplate]:
-    ws = _sheet(wb, "Infraestructura")
-    out: list[InfraestructuraTemplate] = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or not row[0]:
-            continue
-        out.append(InfraestructuraTemplate(
-            numero_catastro=clean_text(row[0]), propietario=clean_text(row[1]), ci=clean_text(row[2]),
-            direccion=clean_text(row[3]), zona=clean_text(row[4]), distrito_id=_as_int(row[5]),
-            manzano=_as_int(row[6]), lote=_as_int(row[7]), superficie_terreno=_as_int(row[8]),
-            area_construida=_as_int(row[9]), uso_suelo=clean_text(row[10]), matricula_ddrr=clean_text(row[11]),
-            valor_catastral=_as_decimal(row[12]), impuesto_anual=_as_decimal(row[13]),
-        ))
-    logger.info(f"Plantillas infraestructura/catastro: {len(out)}")
-    return out
-
-
-def load_contratos_templates(wb: openpyxl.Workbook) -> list[ContratoTemplate]:
-    ws = _sheet(wb, "Contratos")
-    out: list[ContratoTemplate] = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or not row[0]:
-            continue
-        out.append(ContratoTemplate(
-            numero_catastro=clean_text(row[0]), titular=clean_text(row[1]), ci_titular=clean_text(row[2]),
-            categoria=clean_text(row[3]), subcategoria=clean_text(row[4]).upper(), medidor_iot=clean_text(row[5]),
-            fecha_contrato=_parse_date(row[6]), estado_contrato=clean_text(row[7]).upper(),
-            diametro_conexion=clean_text(row[8]), tipo_servicio=clean_text(row[9]),
-        ))
-    logger.info(f"Plantillas contratos: {len(out)}")
-    return out
-
-
-def load_medidores_templates(wb: openpyxl.Workbook) -> list[MedidorTemplate]:
-    ws = _sheet(wb, "Medidores")
-    out: list[MedidorTemplate] = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or not row[0]:
-            continue
-        out.append(MedidorTemplate(clean_text(row[0]), _parse_date(row[1]), _parse_date(row[2]), clean_text(row[3]), _as_int(row[4])))
-    logger.info(f"Plantillas medidores: {len(out)}")
-    return out
-
-
-def load_lecturas_templates(wb: openpyxl.Workbook) -> list[LecturaTemplate]:
-    ws = _sheet(wb, "Lecturas")
-    out: list[LecturaTemplate] = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or not row[0]:
-            continue
-        out.append(LecturaTemplate(clean_text(row[0]), _as_int(row[1]) or 0, _as_int(row[2]) or 0, _parse_date(row[3]), _as_int(row[4]), _parse_date(row[5])))
-    logger.info(f"Plantillas lecturas: {len(out)}")
-    return out
-
-
-def make_catastro_number(distrito_id: int, zona_id: int, manzano: int, lote: int, subdivision: int = 0) -> str:
-    return f"{int(distrito_id):02d}-{int(zona_id):02d}-{int(manzano) % 1000:03d}-{int(lote) % 10000:04d}-{int(subdivision) % 1000:03d}"
-
-
 def gateways() -> list[tuple[int, str, float, float]]:
+    """Devuelve las 14 radiobases LoRaWAN del PDF actualizado."""
     out: list[tuple[int, str, float, float]] = []
-    for base_name, (start_id, _base_lat, _base_lon) in BASE_GATEWAYS.items():
-        for offset in range(8):
-            gid = start_id + offset
-            lat, lon = gateway_safe_point(gid)
-            out.append((gid, f"{base_name}-GW{offset + 1:02d}", lat, lon))
+    for gid in range(1, 15):
+        lat, lon = gateway_safe_point(gid)
+        out.append((gid, f"LoRaWAN-RB{gid:02d}", lat, lon))
     return out

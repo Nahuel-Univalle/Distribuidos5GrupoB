@@ -98,6 +98,38 @@ CREATE TABLE IF NOT EXISTS infraestructuras (
     longitud double
 );
 
+
+-- ============================================================================
+-- CONTRATOS DE SERVICIO DE AGUA
+-- Fuente: contratos_agua.csv del Excel actualizado. Se separa de medidores para
+-- soportar 100.000 contratos y facilitar consultas de estado comercial.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS contratos (
+    numero_contrato bigint PRIMARY KEY,
+    numero_contrato_txt text,
+    numero_catastro text,
+    persona_id uuid,
+    infraestructura_id uuid,
+    medidor_id uuid,
+    categoria_tarifa text,
+    categoria text,
+    fecha_contrato date,
+    estado_contrato text,
+    diametro_conexion text,
+    tipo_servicio text,
+    distrito_id int,
+    zona_id int
+);
+
+CREATE TABLE IF NOT EXISTS contratos_por_estado (
+    estado_contrato text,
+    distrito_id int,
+    numero_contrato bigint,
+    categoria_tarifa text,
+    PRIMARY KEY ((estado_contrato, distrito_id), numero_contrato)
+);
+
 -- ============================================================================
 -- MEDIDORES IoT
 -- ============================================================================

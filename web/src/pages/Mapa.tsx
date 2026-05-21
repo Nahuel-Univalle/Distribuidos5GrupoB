@@ -809,8 +809,8 @@ export default function Mapa() {
   const [sampleLimit, setSampleLimit] = useState(4000);
   const [showLocalZonas, setShowLocalZonas] = useState(false);
   const [showDistritoGuia, setShowDistritoGuia] = useState(false);
-  const [showGeoJsonDistritos, setShowGeoJsonDistritos] = useState(true);
-  const [showDistritos, setShowDistritos] = useState(false);
+  const [showGeoJsonDistritos, setShowGeoJsonDistritos] = useState(false);
+  const [showDistritos, setShowDistritos] = useState(true);
   const [showComunas, setShowComunas] = useState(false);
   const [showSubdistritos, setShowSubdistritos] = useState(false);
   const [showCercado, setShowCercado] = useState(true);
@@ -1108,7 +1108,7 @@ export default function Mapa() {
           <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
             <div className="rounded-2xl bg-white/10 p-3 backdrop-blur"><div className="font-black text-white">54</div><div className="text-blue-100">zonas cargadas</div></div>
             <div className="rounded-2xl bg-white/10 p-3 backdrop-blur"><div className="font-black text-white">{officialDistrictsStatus === "ok" ? (officialDistricts?.features?.length ?? 15) : 15}</div><div className="text-blue-100">distritos</div></div>
-            <div className="rounded-2xl bg-white/10 p-3 backdrop-blur"><div className="font-black text-white">32</div><div className="text-blue-100">radiobases</div></div>
+            <div className="rounded-2xl bg-white/10 p-3 backdrop-blur"><div className="font-black text-white">14</div><div className="text-blue-100">radiobases</div></div>
             <div className="rounded-2xl bg-white/10 p-3 backdrop-blur"><div className="font-black text-white">9</div><div className="text-blue-100">tarifas</div></div>
           </div>
         </div>
@@ -1116,12 +1116,12 @@ export default function Mapa() {
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
         <MetricCard icon={<Waves size={18} />} label="Consumo total" value={`${fmt(consumoTotalM3)} m³`} hint="según lecturas demo" tone="cyan" />
-        <MetricCard icon={<Building2 size={18} />} label="Infraestructuras" value={fmt(resumen.data?.infraestructuras ?? 100000)} hint="meta: 100.000" />
+        <MetricCard icon={<Building2 size={18} />} label="Infraestructuras" value={fmt(resumen.data?.infraestructuras ?? 80000)} hint="meta nueva: 80.000" />
         <MetricCard icon={<CircleDot size={18} />} label="Población beneficiaria" value={fmt(poblacionBeneficiaria)} hint="80k naturales + 5k jurídicas" />
         <MetricCard icon={<Waves size={18} />} label="Medidores" value={fmt(resumen.data?.medidores ?? 120000)} hint="meta: 120.000" tone="cyan" />
         <MetricCard icon={<ShieldCheck size={18} />} label="Activos" value={fmt(resumen.data?.activos ?? 0)} hint="reportan normalmente" />
         <MetricCard icon={<Activity size={18} />} label="Fallas / históricos" value={fmt(fallas)} hint="reemplazos, daño, retiro" tone="red" />
-        <MetricCard icon={<RadioTower size={18} />} label="Gateways" value={fmt(resumen.data?.gateways_con_medidores ?? 32)} hint="32 radiobases" tone="slate" />
+        <MetricCard icon={<RadioTower size={18} />} label="Gateways" value={fmt(resumen.data?.gateways_con_medidores ?? 14)} hint="14 radiobases" tone="slate" />
       </div>
 
       <section className="rounded-[24px] border border-blue-100 bg-white p-4 shadow-sm">
@@ -1273,7 +1273,7 @@ export default function Mapa() {
                   <div className="text-sm font-black text-slate-900">Capas del mapa</div>
                   <button
                     className="rounded-xl bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-600 hover:bg-slate-200"
-                    onClick={() => { setShowDistritoGuia(false); setShowGeoJsonDistritos(true); setShowDistritos(false); setShowComunas(false); setShowSubdistritos(false); setShowCercado(false); setShowManzanas(false); setShowAreaUrbana(false); setShowGateways(false); setShowOutsideGray(true); setShowLocalZonas(false); }}
+                    onClick={() => { setShowDistritoGuia(false); setShowGeoJsonDistritos(false); setShowDistritos(true); setShowComunas(false); setShowSubdistritos(false); setShowCercado(true); setShowManzanas(false); setShowAreaUrbana(false); setShowGateways(false); setShowOutsideGray(true); setShowLocalZonas(false); }}
                   >
                     apagar capas
                   </button>
@@ -1413,7 +1413,7 @@ export default function Mapa() {
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div className="rounded-2xl bg-slate-50 p-3"><b>{fmt(zonasFiltradasGeojson.features.length)}</b><br/><span className="text-xs text-slate-500">zonas visibles</span></div>
               <div className="rounded-2xl bg-slate-50 p-3"><b>{fmt(medidoresFiltrados.length)}</b><br/><span className="text-xs text-slate-500">medidores muestra</span></div>
-              <div className="rounded-2xl bg-slate-50 p-3"><b>{fmt((gateways.data ?? []).length || 32)}</b><br/><span className="text-xs text-slate-500">gateways</span></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><b>{fmt((gateways.data ?? []).length || 14)}</b><br/><span className="text-xs text-slate-500">gateways</span></div>
               <div className="rounded-2xl bg-slate-50 p-3"><b>{fmt(estadoData.length)}</b><br/><span className="text-xs text-slate-500">estados</span></div>
             </div>
           </div>

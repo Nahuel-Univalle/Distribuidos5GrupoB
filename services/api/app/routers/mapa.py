@@ -322,7 +322,7 @@ async def zonas_mapa(
 
 @router.get("/gateways")
 async def gateways_mapa(_u: dict = Depends(current_user)):
-    """32 gateways/radiobases simulados para el mapa."""
+    """14 gateways/radiobases simulados para el mapa."""
     def _q():
         counts: Counter[int] = Counter()
         for r in cassandra_client.execute_raw("SELECT gateway_id, distrito_id FROM medidores", profile="analytics"):
