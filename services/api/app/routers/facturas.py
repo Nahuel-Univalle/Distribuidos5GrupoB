@@ -1,4 +1,4 @@
-"""Facturación: generación batch + recuperación + PDF redirect."""
+﻿"""FacturaciÃ³n: generaciÃ³n batch + recuperaciÃ³n + PDF redirect."""
 from __future__ import annotations
 
 import json
@@ -63,11 +63,11 @@ async def generar_facturas(
     n_ok = 0
     rows = cassandra_client.execute_raw(
         "SELECT medidor_id, numero_contrato, infraestructura_id, categoria_tarifa, distrito_id "
-        "FROM medidores WHERE estado='ACTIVO' ALLOW FILTERING LIMIT %s",
+        "FROM medidores WHERE estado='ACTIVO' LIMIT %s ALLOW FILTERING",
         (limite,),
     )
     for med in rows:
-        # Sumar consumo del periodo (litros) → m³
+        # Sumar consumo del periodo (litros) â†’ mÂ³
         lecturas = list(cassandra_client.execute("lecturas_de_medidor",
                                                   (med["medidor_id"], anio_mes, 200)))
         litros = sum(int(l.get("consumo_litros") or 0) for l in lecturas)
@@ -93,3 +93,4 @@ async def generar_facturas(
         n_ok += 1
 
     return {"generadas": n_ok, "periodo": periodo, "tipo_cambio": str(tipo_cambio)}
+
