@@ -1,37 +1,45 @@
-"""Excel -> catálogos y plantillas para el seeder SEMAPA.
-
-Compatible con la versión nueva del archivo:
-    03 Practica 5 Recursos.xlsx
-
-Hojas soportadas:
-- Distritos: distribución territorial y cuotas por tarifa.
-- Infraestructura: plantillas catastrales/direcciones/uso de suelo.
-- Catastro: referencia del formato de número catastral.
-- Contratos: plantillas de contratos, estados y subcategorías.
-- Medidores: plantillas de MAC, estado y tipo de medidor.
-- Lecturas: plantillas de lectura anterior/actual, radiobase y fecha de pago.
-- Tarifario, ErroresIOT, ModeloMedidores, UnidadesEducativas.
-
-Reglas importantes:
-- No leer la hoja Distritos por posiciones rígidas antiguas. El Excel nuevo tiene
-  18 columnas y las tarifas empiezan en R1..S.
-- La clave territorial correcta es (distrito_id, zona_id). zona_id solo se repite.
-- Las coordenadas oficiales de demo vienen de geo_reference.py, no de las muestras
-  catastrales, para evitar puntos fuera de Cercado.
-"""
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 import openpyxl
 from loguru import logger
 
-from geo_reference import gateway_safe_point, zone_center
+try:
+    from geo_reference import gateway_safe_point, zone_center
+except Exception:
+    def zone_center(distrito_id: int, zona_id: int) -> tuple[float, float]:
+        base_lat = -17.3895
+        base_lon = -66.1568
+        lat = base_lat + ((int(distrito_id) % 7) - 3) * 0.009 + ((int(zona_id) % 5) - 2) * 0.002
+        lon = base_lon + ((int(distrito_id) % 6) - 3) * 0.010 + ((int(zona_id) % 7) - 3) * 0.002
+        return round(lat, 6), round(lon, 6)
+
+    def gateway_safe_point(gateway_id: int) -> tuple[float, float]:
+        points = [
+            (-17.389222, -66.141722),
+            (-17.381000, -66.153361),
+            (-17.369861, -66.176389),
+            (-17.444083, -66.140694),
+            (-17.420000, -66.110000),
+            (-17.350000, -66.170000),
+            (-17.393000, -66.157000),
+            (-17.450000, -66.180000),
+            (-17.389000, -66.161000),
+            (-17.410000, -66.155000),
+            (-17.405000, -66.135000),
+            (-17.377000, -66.185000),
+            (-17.355000, -66.145000),
+            (-17.410000, -66.135000),
+        ]
+        idx = max(int(gateway_id) - 1, 0) % len(points)
+        return points[idx]
 
 
 SUB_ALCALDIAS: list[tuple[int, str]] = [
@@ -42,25 +50,49 @@ SUB_ALCALDIAS: list[tuple[int, str]] = [
     (5, "ITOCTA"),
     (6, "ADELA ZAMUDIO"),
 ]
-SUB_ALCALDIA_ID = {n.upper(): i for i, n in SUB_ALCALDIAS}
+
+SUB_ALCALDIA_ID = {name.upper(): sid for sid, name in SUB_ALCALDIAS}
 
 SUB_ALCALDIA_BY_DISTRITO: dict[int, int] = {
-    1: 1, 2: 1, 13: 1,
-    3: 2, 4: 2,
-    5: 3, 8: 3,
-    6: 4, 7: 4, 14: 4,
-    9: 5, 15: 5,
-    10: 6, 11: 6, 12: 6,
+    1: 1,
+    2: 1,
+    13: 1,
+    3: 2,
+    4: 2,
+    5: 3,
+    8: 3,
+    6: 4,
+    7: 4,
+    14: 4,
+    9: 5,
+    15: 5,
+    10: 6,
+    11: 6,
+    12: 6,
 }
 
-BASE_GATEWAYS: dict[str, tuple[int, float, float]] = {
-    "LoRaWan-Teleferico": (1, -17.389222, -66.141722),
-    "LoRaWan-ParqueVial": (9, -17.381000, -66.153361),
-    "LoRaWan-ParqueLincon": (17, -17.369861, -66.176389),
-    "LoRaWan-Petrolera": (25, -17.444083, -66.140694),
-}
-GATEWAY_NAME_TO_ID = {name: start for name, (start, _lat, _lon) in BASE_GATEWAYS.items()}
 TARIFA_HEADERS = ["R1", "R2", "R3", "R4", "C", "CE", "I", "P", "S"]
+
+BASE_GATEWAYS: list[tuple[str, float, float]] = [
+    ("LoRaWan-Teleferico", -17.389222, -66.141722),
+    ("LoRaWan-ParqueVial", -17.381000, -66.153361),
+    ("LoRaWan-ParqueLincoln", -17.369861, -66.176389),
+    ("LoRaWan-Petrolera", -17.444083, -66.140694),
+    ("LoRaWan-SurEste", -17.420000, -66.110000),
+    ("LoRaWan-Norte", -17.350000, -66.170000),
+    ("LoRaWan-Centro", -17.393000, -66.157000),
+    ("LoRaWan-Itocta", -17.450000, -66.180000),
+    ("LoRaWan-AdelaZamudio", -17.389000, -66.161000),
+    ("LoRaWan-ValleHermoso", -17.410000, -66.155000),
+    ("LoRaWan-AlejoCalatayud", -17.405000, -66.135000),
+    ("LoRaWan-Molle", -17.377000, -66.185000),
+    ("LoRaWan-Tunari", -17.355000, -66.145000),
+    ("LoRaWan-LagunaAlalay", -17.410000, -66.135000),
+]
+
+
+def target_gateways() -> int:
+    return int(os.getenv("SEED_TARGET_GATEWAYS", "14"))
 
 
 def clean_text(value: Any) -> str:
@@ -70,22 +102,42 @@ def clean_text(value: Any) -> str:
 
 
 def norm_key(value: Any) -> str:
-    return clean_text(value).upper().replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
+    text = clean_text(value).upper()
+    replacements = {
+        "Á": "A",
+        "É": "E",
+        "Í": "I",
+        "Ó": "O",
+        "Ú": "U",
+        "Ñ": "N",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    return text
 
 
-def _as_int(x: Any) -> int | None:
-    if x is None or x == "":
+def _as_int(value: Any) -> int | None:
+    if value is None or value == "":
         return None
     try:
-        return int(float(str(x).replace(",", ".")))
+        return int(float(str(value).replace(",", ".")))
     except (TypeError, ValueError):
-        return None
+        found = re.search(r"\d+", clean_text(value))
+        return int(found.group(0)) if found else None
 
 
-def _as_decimal(x: Any) -> Decimal:
-    if x is None or x == "":
+def _as_decimal(value: Any) -> Decimal:
+    if value is None or value == "":
         return Decimal("0")
-    return Decimal(str(x).replace(",", "."))
+    text = clean_text(value)
+    text = text.replace("Bs.", "").replace("Bs", "").replace("$us", "").replace("USD", "")
+    text = text.replace(" ", "").replace(",", ".")
+    if not text:
+        return Decimal("0")
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        return Decimal("0")
 
 
 def _parse_date(value: Any) -> datetime | None:
@@ -94,7 +146,18 @@ def _parse_date(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value
     text = clean_text(value)
-    for fmt in ("%m/%d/%y", "%m/%d/%Y", "%d/%m/%y", "%d/%m/%Y", "%m/%d/%y %H:%M", "%d/%m/%y %H:%M"):
+    for fmt in (
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%d/%m/%y",
+        "%m/%d/%Y",
+        "%m/%d/%y",
+        "%Y/%m/%d",
+        "%d-%m-%Y",
+        "%m-%d-%Y",
+        "%m/%d/%y %H:%M",
+        "%d/%m/%y %H:%M",
+    ):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
@@ -102,30 +165,29 @@ def _parse_date(value: Any) -> datetime | None:
     return None
 
 
-def gateway_id_from_name(raw_name: str | None) -> int:
-    text = clean_text(raw_name)
-    for name, gid in GATEWAY_NAME_TO_ID.items():
-        if name.upper() in text.upper():
-            return gid
+def gateway_id_from_name(raw_name: Any) -> int:
+    text = norm_key(raw_name)
+    if not text:
+        return 1
+
+    for idx, (name, _lat, _lon) in enumerate(BASE_GATEWAYS, start=1):
+        if norm_key(name) in text or text in norm_key(name):
+            return ((idx - 1) % target_gateways()) + 1
+
+    number = _as_int(text)
+    if number:
+        return ((number - 1) % target_gateways()) + 1
+
     return 1
 
 
 def gateway_pool_for(gateway_id: int) -> list[int]:
-    gid = int(gateway_id or 1)
-    if 1 <= gid <= 8:
-        start = 1
-    elif 9 <= gid <= 16:
-        start = 9
-    elif 17 <= gid <= 24:
-        start = 17
-    elif 25 <= gid <= 32:
-        start = 25
-    else:
-        start = 1
-    return list(range(start, start + 8))
+    target = max(target_gateways(), 1)
+    gid = ((int(gateway_id or 1) - 1) % target) + 1
+    return [gid]
 
 
-@dataclass
+@dataclass(slots=True)
 class Distrito:
     distrito_id: int
     sub_alcaldia_id: int
@@ -133,7 +195,7 @@ class Distrito:
     habitantes: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class Zona:
     distrito_id: int
     zona_id: int
@@ -149,7 +211,7 @@ class Zona:
         return sum(int(v or 0) for v in self.counts.values())
 
 
-@dataclass
+@dataclass(slots=True)
 class ModeloMedidor:
     modelo_id: int
     marca: str
@@ -158,7 +220,7 @@ class ModeloMedidor:
     aplicacion: str
 
 
-@dataclass
+@dataclass(slots=True)
 class TarifaCat:
     categoria: str
     alias: str
@@ -173,13 +235,13 @@ class TarifaCat:
     descripcion: str
 
 
-@dataclass
+@dataclass(slots=True)
 class TipoInfra:
     tipo_id: int
     descripcion: str
 
 
-@dataclass
+@dataclass(slots=True)
 class UnidadEducativa:
     codigo: str
     nombre: str
@@ -189,7 +251,7 @@ class UnidadEducativa:
     educacion: str
 
 
-@dataclass
+@dataclass(slots=True)
 class InfraestructuraTemplate:
     numero_catastro: str
     propietario: str
@@ -207,7 +269,7 @@ class InfraestructuraTemplate:
     impuesto_anual: Decimal
 
 
-@dataclass
+@dataclass(slots=True)
 class ContratoTemplate:
     numero_catastro: str
     titular: str
@@ -221,7 +283,7 @@ class ContratoTemplate:
     tipo_servicio: str
 
 
-@dataclass
+@dataclass(slots=True)
 class MedidorTemplate:
     medidor_iot: str
     fecha_instalacion: datetime | None
@@ -230,7 +292,7 @@ class MedidorTemplate:
     tipo_medidor_id: int | None
 
 
-@dataclass
+@dataclass(slots=True)
 class LecturaTemplate:
     medidor_iot: str
     lectura_anterior: int
@@ -249,7 +311,7 @@ def load_workbook(path: str | Path) -> openpyxl.Workbook:
 
 
 def _sheet(wb: openpyxl.Workbook, *names: str):
-    lower = {s.lower(): s for s in wb.sheetnames}
+    lower = {sheet.lower(): sheet for sheet in wb.sheetnames}
     for name in names:
         found = lower.get(name.lower())
         if found:
@@ -259,42 +321,44 @@ def _sheet(wb: openpyxl.Workbook, *names: str):
 
 def load_distritos_zonas(wb: openpyxl.Workbook) -> tuple[list[Distrito], list[Zona]]:
     ws = _sheet(wb, "Distritos")
-    # Buscar fila de encabezados donde estén R1..S y Total. En el Excel nuevo es fila 2.
     header_row = 2
-    headers = [clean_text(c.value) for c in ws[header_row]]
-    tariff_cols: dict[str, int] = {}
-    for idx, h in enumerate(headers):
-        hu = h.upper()
-        if hu in TARIFA_HEADERS:
-            tariff_cols[hu] = idx
-    if set(TARIFA_HEADERS) - set(tariff_cols):
-        raise ValueError(f"La hoja Distritos no tiene todas las tarifas {TARIFA_HEADERS}. Headers={headers}")
+    headers = [clean_text(cell.value) for cell in ws[header_row]]
 
-    # Posiciones estables del Excel nuevo.
-    COL_SUB = 0
-    COL_DIST = 1
-    COL_ZONA = 2
-    COL_NOMBRE_ZONA = 3
-    COL_GATEWAY = 4
-    COL_ZONE_POP = 6     # población estimada de la zona (suma ≈ población beneficiaria)
-    COL_SUB_HAB = 7      # total por subalcaldía, solo primera fila de cada subalcaldía
-    COL_TOTAL = next((i for i, h in enumerate(headers) if h.upper() == "TOTAL"), 17)
+    tariff_cols: dict[str, int] = {}
+    for idx, header in enumerate(headers):
+        header_upper = header.upper()
+        if header_upper in TARIFA_HEADERS:
+            tariff_cols[header_upper] = idx
+
+    missing = set(TARIFA_HEADERS) - set(tariff_cols)
+    if missing:
+        raise ValueError(f"La hoja Distritos no tiene todas las tarifas {TARIFA_HEADERS}. Faltan={sorted(missing)}")
+
+    col_sub = 0
+    col_dist = 1
+    col_zona = 2
+    col_nombre_zona = 3
+    col_gateway = 4
+    col_zone_pop = 6
+    col_sub_hab = 7
+    col_total = next((idx for idx, header in enumerate(headers) if header.upper() == "TOTAL"), 17)
 
     distritos: dict[int, Distrito] = {}
     zonas: list[Zona] = []
     cur_sub = ""
     cur_dist: int | None = None
     cur_habitantes = 0
-    habitantes_por_distrito: dict[int, int] = {}
 
     for row_idx, row in enumerate(ws.iter_rows(min_row=header_row + 1, values_only=True), start=header_row + 1):
-        if not row or all(v is None for v in row):
+        if not row or all(value is None for value in row):
             continue
-        if row[COL_SUB] is not None:
-            cur_sub = clean_text(row[COL_SUB]).upper()
-        if row[COL_DIST] is not None:
-            cur_dist = _as_int(row[COL_DIST])
-            cur_habitantes = _as_int(row[COL_SUB_HAB] if len(row) > COL_SUB_HAB else None) or cur_habitantes
+
+        if len(row) > col_sub and row[col_sub] is not None:
+            cur_sub = clean_text(row[col_sub]).upper()
+
+        if len(row) > col_dist and row[col_dist] is not None:
+            cur_dist = _as_int(row[col_dist])
+            cur_habitantes = _as_int(row[col_sub_hab] if len(row) > col_sub_hab else None) or cur_habitantes
             if cur_dist is not None and cur_dist not in distritos:
                 distritos[cur_dist] = Distrito(
                     distrito_id=cur_dist,
@@ -302,27 +366,28 @@ def load_distritos_zonas(wb: openpyxl.Workbook) -> tuple[list[Distrito], list[Zo
                     nombre=f"DISTRITO {cur_dist}",
                     habitantes=cur_habitantes,
                 )
-        elif cur_dist is not None and len(row) > COL_SUB_HAB and row[COL_SUB_HAB] is not None and distritos[cur_dist].habitantes == 0:
-            distritos[cur_dist].habitantes = _as_int(row[COL_SUB_HAB]) or 0
+        elif cur_dist is not None and len(row) > col_sub_hab and row[col_sub_hab] is not None and distritos[cur_dist].habitantes == 0:
+            distritos[cur_dist].habitantes = _as_int(row[col_sub_hab]) or 0
 
-        zona_id = _as_int(row[COL_ZONA] if len(row) > COL_ZONA else None)
-        zona_nombre = clean_text(row[COL_NOMBRE_ZONA] if len(row) > COL_NOMBRE_ZONA else None)
+        zona_id = _as_int(row[col_zona] if len(row) > col_zona else None)
+        zona_nombre = clean_text(row[col_nombre_zona] if len(row) > col_nombre_zona else None)
         if cur_dist is None or zona_id is None or not zona_nombre:
             continue
 
         counts = {cat: _as_int(row[col] if col < len(row) else None) or 0 for cat, col in tariff_cols.items()}
-        total_col = _as_int(row[COL_TOTAL] if COL_TOTAL < len(row) else None) or 0
-        zona_habitantes = _as_int(row[COL_ZONE_POP] if len(row) > COL_ZONE_POP else None) or 0
-        habitantes_por_distrito[cur_dist] = habitantes_por_distrito.get(cur_dist, 0) + zona_habitantes
+        total_col = _as_int(row[col_total] if col_total < len(row) else None) or 0
+        zona_habitantes = _as_int(row[col_zone_pop] if len(row) > col_zone_pop else None) or 0
+
         if not any(counts.values()) and total_col == 0:
             continue
+
         if total_col and sum(counts.values()) != total_col:
             logger.warning(
                 f"Fila {row_idx}: suma tarifas={sum(counts.values())} != Total={total_col} "
                 f"en D{cur_dist}/Z{zona_id} {zona_nombre}"
             )
 
-        gw_id = gateway_id_from_name(row[COL_GATEWAY] if len(row) > COL_GATEWAY else None)
+        gw_id = gateway_id_from_name(row[col_gateway] if len(row) > col_gateway else None)
         centro = zone_center(cur_dist, zona_id)
         zonas.append(
             Zona(
@@ -337,31 +402,31 @@ def load_distritos_zonas(wb: openpyxl.Workbook) -> tuple[list[Distrito], list[Zo
             )
         )
 
-    # Habitantes del distrito = suma de habitantes de sus zonas. Si una zona no trae
-    # población, se reparte proporcionalmente desde el total de subalcaldía disponible.
     for dist in distritos.values():
-        zonas_d = [z for z in zonas if z.distrito_id == dist.distrito_id]
-        suma_zonas = sum(z.habitantes for z in zonas_d)
+        zonas_distrito = [zona for zona in zonas if zona.distrito_id == dist.distrito_id]
+        suma_zonas = sum(zona.habitantes for zona in zonas_distrito)
         if suma_zonas > 0:
             dist.habitantes = suma_zonas
-        elif dist.habitantes and zonas_d:
-            total = sum(z.total_medidores for z in zonas_d) or 1
-            for z in zonas_d:
-                z.habitantes = int(dist.habitantes * z.total_medidores / total)
+        elif dist.habitantes and zonas_distrito:
+            total_medidores = sum(zona.total_medidores for zona in zonas_distrito) or 1
+            for zona in zonas_distrito:
+                zona.habitantes = int(dist.habitantes * zona.total_medidores / total_medidores)
 
-    total_base = sum(z.total_medidores for z in zonas)
+    total_base = sum(zona.total_medidores for zona in zonas)
     logger.info(f"Distritos cargados: {len(distritos)} | Zonas: {len(zonas)} | Total base={total_base:,}")
-    if total_base != 100000:
-        logger.warning(f"La hoja Distritos no suma 100.000; suma={total_base:,}")
-    return sorted(distritos.values(), key=lambda d: d.distrito_id), zonas
+    if total_base not in {80000, 100000, 120000}:
+        logger.warning(f"La hoja Distritos suma {total_base:,}. Se usará como distribución territorial de apoyo.")
+
+    return sorted(distritos.values(), key=lambda item: item.distrito_id), zonas
 
 
 def load_tarifas(wb: openpyxl.Workbook) -> list[TarifaCat]:
     ws = _sheet(wb, "Tarifario")
     out: list[TarifaCat] = []
     cur_alias = ""
+
     for row in ws.iter_rows(min_row=3, values_only=True):
-        if not row or all(v is None for v in row):
+        if not row or all(value is None for value in row):
             continue
         alias_txt, cat, fijo, usd, r1, r2, r3, r4, r5, r6, desc = (list(row) + [None] * 11)[:11]
         if alias_txt:
@@ -369,8 +434,23 @@ def load_tarifas(wb: openpyxl.Workbook) -> list[TarifaCat]:
         cat_txt = clean_text(cat).upper()
         if not cat_txt or cat_txt not in TARIFA_HEADERS:
             continue
-        out.append(TarifaCat(cat_txt, cur_alias, _as_decimal(fijo), _as_decimal(usd), _as_decimal(r1), _as_decimal(r2), _as_decimal(r3), _as_decimal(r4), _as_decimal(r5), _as_decimal(r6), clean_text(desc)))
-    found = {t.categoria for t in out}
+        out.append(
+            TarifaCat(
+                cat_txt,
+                cur_alias,
+                _as_decimal(fijo),
+                _as_decimal(usd),
+                _as_decimal(r1),
+                _as_decimal(r2),
+                _as_decimal(r3),
+                _as_decimal(r4),
+                _as_decimal(r5),
+                _as_decimal(r6),
+                clean_text(desc),
+            )
+        )
+
+    found = {tarifa.categoria for tarifa in out}
     missing = set(TARIFA_HEADERS) - found
     if missing:
         raise ValueError(f"Faltan tarifas en Tarifario: {sorted(missing)}")
@@ -382,10 +462,20 @@ def load_modelos(wb: openpyxl.Workbook) -> list[ModeloMedidor]:
     ws = _sheet(wb, "ModeloMedidores")
     out: list[ModeloMedidor] = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        mid = _as_int(row[0] if row else None)
-        if mid is None:
+        if not row:
             continue
-        out.append(ModeloMedidor(mid, clean_text(row[1]), clean_text(row[2]), clean_text(row[3]), clean_text(row[4])))
+        modelo_id = _as_int(row[0])
+        if modelo_id is None:
+            continue
+        out.append(
+            ModeloMedidor(
+                modelo_id,
+                clean_text(row[1] if len(row) > 1 else ""),
+                clean_text(row[2] if len(row) > 2 else ""),
+                clean_text(row[3] if len(row) > 3 else ""),
+                clean_text(row[4] if len(row) > 4 else ""),
+            )
+        )
     logger.info(f"Modelos medidor: {len(out)}")
     return out
 
@@ -394,28 +484,39 @@ def load_errores(wb: openpyxl.Workbook) -> list[tuple[int, str]]:
     ws = _sheet(wb, "ErroresIOT")
     out: list[tuple[int, str]] = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        code = _as_int(row[0] if row else None)
+        if not row:
+            continue
+        code = _as_int(row[0])
         if code is None:
             continue
-        out.append((code, clean_text(row[1])))
+        out.append((code, clean_text(row[1] if len(row) > 1 else "")))
     logger.info(f"Errores IoT: {len(out)}")
     return out
 
 
 def load_tipos_infra(wb: openpyxl.Workbook) -> list[TipoInfra]:
-    # El XLSX nuevo ya no usa la hoja antigua Infraestructuras como catálogo;
-    # trae Infraestructura como ejemplos. Extraemos usos de suelo y completamos
-    # con tipos que el enunciado pide.
     base = [
-        "Educativo", "Salud", "Asilo / Convento / Iglesia", "Beneficencia",
-        "Área verde / Parque", "Centro comunal / Cultural", "Infraestructura pública / Hidrante",
-        "Terreno baldío", "Casa abandonada", "Edificio", "Condominio", "Residencial",
-        "Comercial", "Comercial Especial", "Industrial", "Mixto",
+        "Educativo",
+        "Salud",
+        "Asilo / Convento / Iglesia",
+        "Beneficencia",
+        "Área verde / Parque",
+        "Centro comunal / Cultural",
+        "Infraestructura pública / Hidrante",
+        "Terreno baldío",
+        "Casa abandonada",
+        "Edificio",
+        "Condominio",
+        "Residencial",
+        "Comercial",
+        "Comercial Especial",
+        "Industrial",
+        "Mixto",
     ]
     usos: list[str] = []
     try:
         ws = _sheet(wb, "Infraestructura")
-        headers = [norm_key(c.value) for c in ws[1]]
+        headers = [norm_key(cell.value) for cell in ws[1]]
         col_uso = headers.index("USO_SUELO") if "USO_SUELO" in headers else None
         if col_uso is not None:
             for row in ws.iter_rows(min_row=2, values_only=True):
@@ -424,11 +525,13 @@ def load_tipos_infra(wb: openpyxl.Workbook) -> list[TipoInfra]:
                     usos.append(val)
     except Exception:
         pass
-    merged = []
-    for v in usos + base:
-        if v and v not in merged:
-            merged.append(v)
-    out = [TipoInfra(i + 1, desc) for i, desc in enumerate(merged)]
+
+    merged: list[str] = []
+    for value in usos + base:
+        if value and value not in merged:
+            merged.append(value)
+
+    out = [TipoInfra(index + 1, desc) for index, desc in enumerate(merged)]
     logger.info(f"Tipos infraestructura: {len(out)}")
     return out
 
@@ -437,9 +540,18 @@ def load_unidades_educativas(wb: openpyxl.Workbook) -> list[UnidadEducativa]:
     ws = _sheet(wb, "UnidadesEducativas")
     out: list[UnidadEducativa] = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or row[1] is None:
+        if not row or len(row) < 9 or row[1] is None:
             continue
-        out.append(UnidadEducativa(clean_text(row[1]), clean_text(row[2]), clean_text(row[0]), clean_text(row[7]), clean_text(row[8]), clean_text(row[3])))
+        out.append(
+            UnidadEducativa(
+                codigo=clean_text(row[1]),
+                nombre=clean_text(row[2]),
+                distrito_txt=clean_text(row[0]),
+                zona_txt=clean_text(row[7]),
+                direccion=clean_text(row[8]),
+                educacion=clean_text(row[3]),
+            )
+        )
     logger.info(f"Unidades educativas: {len(out)}")
     return out
 
@@ -450,13 +562,24 @@ def load_infraestructura_templates(wb: openpyxl.Workbook) -> list[Infraestructur
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row or not row[0]:
             continue
-        out.append(InfraestructuraTemplate(
-            numero_catastro=clean_text(row[0]), propietario=clean_text(row[1]), ci=clean_text(row[2]),
-            direccion=clean_text(row[3]), zona=clean_text(row[4]), distrito_id=_as_int(row[5]),
-            manzano=_as_int(row[6]), lote=_as_int(row[7]), superficie_terreno=_as_int(row[8]),
-            area_construida=_as_int(row[9]), uso_suelo=clean_text(row[10]), matricula_ddrr=clean_text(row[11]),
-            valor_catastral=_as_decimal(row[12]), impuesto_anual=_as_decimal(row[13]),
-        ))
+        out.append(
+            InfraestructuraTemplate(
+                numero_catastro=clean_text(row[0]),
+                propietario=clean_text(row[1] if len(row) > 1 else ""),
+                ci=clean_text(row[2] if len(row) > 2 else ""),
+                direccion=clean_text(row[3] if len(row) > 3 else ""),
+                zona=clean_text(row[4] if len(row) > 4 else ""),
+                distrito_id=_as_int(row[5] if len(row) > 5 else None),
+                manzano=_as_int(row[6] if len(row) > 6 else None),
+                lote=_as_int(row[7] if len(row) > 7 else None),
+                superficie_terreno=_as_int(row[8] if len(row) > 8 else None),
+                area_construida=_as_int(row[9] if len(row) > 9 else None),
+                uso_suelo=clean_text(row[10] if len(row) > 10 else ""),
+                matricula_ddrr=clean_text(row[11] if len(row) > 11 else ""),
+                valor_catastral=_as_decimal(row[12] if len(row) > 12 else None),
+                impuesto_anual=_as_decimal(row[13] if len(row) > 13 else None),
+            )
+        )
     logger.info(f"Plantillas infraestructura/catastro: {len(out)}")
     return out
 
@@ -467,12 +590,20 @@ def load_contratos_templates(wb: openpyxl.Workbook) -> list[ContratoTemplate]:
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row or not row[0]:
             continue
-        out.append(ContratoTemplate(
-            numero_catastro=clean_text(row[0]), titular=clean_text(row[1]), ci_titular=clean_text(row[2]),
-            categoria=clean_text(row[3]), subcategoria=clean_text(row[4]).upper(), medidor_iot=clean_text(row[5]),
-            fecha_contrato=_parse_date(row[6]), estado_contrato=clean_text(row[7]).upper(),
-            diametro_conexion=clean_text(row[8]), tipo_servicio=clean_text(row[9]),
-        ))
+        out.append(
+            ContratoTemplate(
+                numero_catastro=clean_text(row[0]),
+                titular=clean_text(row[1] if len(row) > 1 else ""),
+                ci_titular=clean_text(row[2] if len(row) > 2 else ""),
+                categoria=clean_text(row[3] if len(row) > 3 else ""),
+                subcategoria=clean_text(row[4] if len(row) > 4 else "").upper(),
+                medidor_iot=clean_text(row[5] if len(row) > 5 else ""),
+                fecha_contrato=_parse_date(row[6] if len(row) > 6 else None),
+                estado_contrato=clean_text(row[7] if len(row) > 7 else "").upper(),
+                diametro_conexion=clean_text(row[8] if len(row) > 8 else ""),
+                tipo_servicio=clean_text(row[9] if len(row) > 9 else ""),
+            )
+        )
     logger.info(f"Plantillas contratos: {len(out)}")
     return out
 
@@ -483,7 +614,15 @@ def load_medidores_templates(wb: openpyxl.Workbook) -> list[MedidorTemplate]:
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row or not row[0]:
             continue
-        out.append(MedidorTemplate(clean_text(row[0]), _parse_date(row[1]), _parse_date(row[2]), clean_text(row[3]), _as_int(row[4])))
+        out.append(
+            MedidorTemplate(
+                medidor_iot=clean_text(row[0]),
+                fecha_instalacion=_parse_date(row[1] if len(row) > 1 else None),
+                fecha_desinstalacion=_parse_date(row[2] if len(row) > 2 else None),
+                estado=clean_text(row[3] if len(row) > 3 else ""),
+                tipo_medidor_id=_as_int(row[4] if len(row) > 4 else None),
+            )
+        )
     logger.info(f"Plantillas medidores: {len(out)}")
     return out
 
@@ -494,7 +633,16 @@ def load_lecturas_templates(wb: openpyxl.Workbook) -> list[LecturaTemplate]:
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row or not row[0]:
             continue
-        out.append(LecturaTemplate(clean_text(row[0]), _as_int(row[1]) or 0, _as_int(row[2]) or 0, _parse_date(row[3]), _as_int(row[4]), _parse_date(row[5])))
+        out.append(
+            LecturaTemplate(
+                medidor_iot=clean_text(row[0]),
+                lectura_anterior=_as_int(row[1] if len(row) > 1 else None) or 0,
+                lectura_actual=_as_int(row[2] if len(row) > 2 else None) or 0,
+                fecha_hora=_parse_date(row[3] if len(row) > 3 else None),
+                radiobase=_as_int(row[4] if len(row) > 4 else None),
+                fecha_pago=_parse_date(row[5] if len(row) > 5 else None),
+            )
+        )
     logger.info(f"Plantillas lecturas: {len(out)}")
     return out
 
@@ -504,10 +652,13 @@ def make_catastro_number(distrito_id: int, zona_id: int, manzano: int, lote: int
 
 
 def gateways() -> list[tuple[int, str, float, float]]:
+    target = target_gateways()
     out: list[tuple[int, str, float, float]] = []
-    for base_name, (start_id, _base_lat, _base_lon) in BASE_GATEWAYS.items():
-        for offset in range(8):
-            gid = start_id + offset
-            lat, lon = gateway_safe_point(gid)
-            out.append((gid, f"{base_name}-GW{offset + 1:02d}", lat, lon))
+    for index in range(target):
+        name, lat, lon = BASE_GATEWAYS[index % len(BASE_GATEWAYS)]
+        if index >= len(BASE_GATEWAYS):
+            lat += (index // len(BASE_GATEWAYS)) * 0.002
+            lon -= (index // len(BASE_GATEWAYS)) * 0.002
+        safe_lat, safe_lon = gateway_safe_point(index + 1)
+        out.append((index + 1, name, safe_lat or round(lat, 6), safe_lon or round(lon, 6)))
     return out

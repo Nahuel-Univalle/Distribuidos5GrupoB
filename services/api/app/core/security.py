@@ -1,6 +1,8 @@
-"""Security utilities: JWT, bcrypt, role-based guards."""
+"""Security utilities: JWT, password verification, role-based guards."""
 from __future__ import annotations
 
+import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
@@ -8,7 +10,6 @@ import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from loguru import logger
 
 from app.core.config import settings
 
@@ -16,26 +17,47 @@ from app.core.config import settings
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 
-# === Roles ===
 ROLE_ALCALDIA = "ALCALDIA"
 ROLE_GERENCIA = "GERENCIA"
 ROLE_CONTABILIDAD = "CONTABILIDAD"
 ALL_ROLES = (ROLE_ALCALDIA, ROLE_GERENCIA, ROLE_CONTABILIDAD)
 
 
-# === Password helpers ===
 def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode()
 
 
-def verify_password(plain: str, hashed: str) -> bool:
+def _is_sha256_hash(value: str) -> bool:
+    if not value:
+        return False
+    if len(value) != 64:
+        return False
     try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
+        int(value, 16)
+        return True
+    except ValueError:
         return False
 
 
-# === JWT ===
+def verify_password(plain: str, hashed: str) -> bool:
+    if not plain or not hashed:
+        return False
+
+    hashed = hashed.strip()
+
+    if hashed.startswith(("$2a$", "$2b$", "$2y$")):
+        try:
+            return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        except Exception:
+            return False
+
+    if _is_sha256_hash(hashed):
+        candidate = hashlib.sha256(plain.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(candidate, hashed)
+
+    return hmac.compare_digest(plain, hashed)
+
+
 def create_access_token(username: str, rol: str) -> str:
     now = datetime.now(timezone.utc)
     payload = {
@@ -56,16 +78,13 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token inválido")
 
 
-# === Dependency: current user ===
 def current_user(token: str | None = Depends(oauth2_scheme)) -> dict:
     if not token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Falta token")
     return decode_token(token)
 
 
-# === Role guard factory ===
 def require_roles(roles: Sequence[str]):
-    """Devuelve una dependency que valida el rol del JWT."""
     role_set = set(roles)
 
     def _guard(user: dict = Depends(current_user)) -> dict:

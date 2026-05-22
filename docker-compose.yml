@@ -1,7 +1,7 @@
 # ============================================================================
 # SEMAPA - Docker Compose
-# Levanta el stack completo: Cassandra cluster + Redis + RabbitMQ +
-# Backend API + Workers + Frontend + Nginx + Mailhog
+# Stack completo: Cassandra cluster + Redis + RabbitMQ + Backend API + Workers
+# Frontend + Nginx + Mailhog + Seeder + Simulador + Ingestor + PDF Service
 # ============================================================================
 
 name: semapa
@@ -18,9 +18,8 @@ volumes:
   lora-data:
 
 services:
-
   # ==========================================================================
-  # CASSANDRA CLUSTER (2 nodos)
+  # CASSANDRA CLUSTER - Nodo 1
   # ==========================================================================
   cassandra-1:
     image: cassandra:4.1
@@ -42,12 +41,15 @@ services:
     networks:
       - semapa-net
     healthcheck:
-      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      test: ["CMD-SHELL", "cqlsh cassandra-1 9042 -e 'DESCRIBE CLUSTER' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
       start_period: 90s
 
+  # ==========================================================================
+  # CASSANDRA CLUSTER - Nodo 2
+  # ==========================================================================
   cassandra-2:
     image: cassandra:4.1
     container_name: semapa-cassandra-2
@@ -69,14 +71,15 @@ services:
       cassandra-1:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      test: ["CMD-SHELL", "cqlsh cassandra-2 9042 -e 'DESCRIBE CLUSTER' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
-      start_period: 90s
+      start_period: 120s
 
   # ==========================================================================
-  # CASSANDRA SCHEMA INIT (one-shot)
+  # CASSANDRA SCHEMA INIT - one-shot
+  # Ejecuta 01_keyspace.cql, 02_tables.cql y 03_indexes.cql
   # ==========================================================================
   cassandra-init:
     image: cassandra:4.1
@@ -92,18 +95,20 @@ services:
       - semapa-net
     command: >
       bash -c "
-        echo 'Esperando 15s adicionales para estabilizar el cluster...';
-        sleep 15;
-        echo 'Aplicando schema...';
-        cqlsh cassandra-1 -f /init/01_keyspace.cql &&
-        cqlsh cassandra-1 -f /init/02_tables.cql &&
-        cqlsh cassandra-1 -f /init/03_indexes.cql &&
+        echo 'Esperando estabilización adicional del clúster Cassandra...';
+        sleep 20;
+        echo 'Aplicando keyspace...';
+        cqlsh cassandra-1 9042 --request-timeout=180 -f /init/01_keyspace.cql;
+        echo 'Aplicando tablas...';
+        cqlsh cassandra-1 9042 --request-timeout=180 -f /init/02_tables.cql;
+        echo 'Aplicando índices...';
+        cqlsh cassandra-1 9042 --request-timeout=180 -f /init/03_indexes.cql;
         echo 'Schema aplicado correctamente.'
       "
     restart: "no"
 
   # ==========================================================================
-  # REDIS (cache y deduplicación)
+  # REDIS - cache y deduplicación
   # ==========================================================================
   redis:
     image: redis:7-alpine
@@ -122,7 +127,7 @@ services:
       retries: 5
 
   # ==========================================================================
-  # RABBITMQ (notificaciones)
+  # RABBITMQ - mensajería asincrónica para preavisos
   # ==========================================================================
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -147,7 +152,8 @@ services:
       retries: 5
 
   # ==========================================================================
-  # MAILHOG (SMTP de pruebas, UI en :8025)
+  # MAILHOG - SMTP de pruebas
+  # UI: http://localhost:8025
   # ==========================================================================
   mailhog:
     image: mailhog/mailhog:latest
@@ -160,7 +166,7 @@ services:
       - semapa-net
 
   # ==========================================================================
-  # BACKEND API (2 réplicas con load balance via Nginx)
+  # BACKEND API - Réplica 1
   # ==========================================================================
   api-1:
     build:
@@ -172,6 +178,11 @@ services:
       - .env
     environment:
       - INSTANCE_ID=api-1
+      - CASSANDRA_HOSTS=cassandra-1,cassandra-2
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_KEYSPACE=semapa
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-semapa}:${RABBITMQ_PASSWORD:-semapa}@rabbitmq:5672/
     networks:
       - semapa-net
     depends_on:
@@ -188,6 +199,9 @@ services:
       retries: 3
       start_period: 30s
 
+  # ==========================================================================
+  # BACKEND API - Réplica 2
+  # ==========================================================================
   api-2:
     build:
       context: ./services/api
@@ -198,6 +212,11 @@ services:
       - .env
     environment:
       - INSTANCE_ID=api-2
+      - CASSANDRA_HOSTS=cassandra-1,cassandra-2
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_KEYSPACE=semapa
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-semapa}:${RABBITMQ_PASSWORD:-semapa}@rabbitmq:5672/
     networks:
       - semapa-net
     depends_on:
@@ -215,7 +234,9 @@ services:
       start_period: 30s
 
   # ==========================================================================
-  # SEEDER (one-shot, se ejecuta con: docker compose run seeder)
+  # SEEDER - one-shot
+  # Ejecutar con:
+  # docker compose run --rm -e SEED_RESET=true seeder
   # ==========================================================================
   seeder:
     build:
@@ -225,21 +246,33 @@ services:
     env_file:
       - .env
     environment:
-      - SEEDER_EXCEL=/recursos/recursos.xlsx
+      - CASSANDRA_HOSTS=cassandra-1,cassandra-2
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_KEYSPACE=semapa
+      - SEEDER_EXCEL=/data/resources/recursos_practica_5.xlsx
+      - SEED_INFRA_CSV=/data/resources/infraestructuras_cochabamba.csv
+      - SEED_CONTRATOS_CSV=/data/resources/contratos_agua.csv
+      - SEED_MEDIDORES_CSV=/data/resources/medidores_iot.csv
+      - SEED_TARGET_GATEWAYS=14
+      - SEED_TARGET_INFRAESTRUCTURAS=80000
+      - SEED_TARGET_CONTRATOS=100000
+      - SEED_TARGET_MEDIDORES=120000
+      - SEED_CONCURRENCY=80
+      - SEED_CHUNK_SIZE=3000
       - SEEDS_DIR=/data/seeds
     volumes:
       - ./data:/data
-      - "./Recursos Practica 5.xlsx:/recursos/recursos.xlsx:ro"
     networks:
       - semapa-net
     depends_on:
       cassandra-init:
         condition: service_completed_successfully
+    command: ["python", "seed.py"]
     profiles:
       - tools
 
   # ==========================================================================
-  # SIMULATOR LoRaWAN (generador de archivos .txt)
+  # SIMULATOR LoRaWAN - generador de lecturas .txt
   # ==========================================================================
   simulator:
     build:
@@ -249,6 +282,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - CASSANDRA_HOSTS=cassandra-1,cassandra-2
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_KEYSPACE=semapa
     ports:
       - "8002:8002"
     volumes:
@@ -260,7 +297,7 @@ services:
         condition: service_completed_successfully
 
   # ==========================================================================
-  # INGESTOR (watcher de carpeta /lora-data → Cassandra)
+  # INGESTOR - watcher de /lora-data hacia Cassandra
   # ==========================================================================
   ingestor:
     build:
@@ -270,6 +307,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - CASSANDRA_HOSTS=cassandra-1,cassandra-2
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_KEYSPACE=semapa
+      - REDIS_URL=redis://redis:6379/0
     ports:
       - "8003:8003"
     volumes:
@@ -283,7 +325,7 @@ services:
         condition: service_healthy
 
   # ==========================================================================
-  # PDF SERVICE
+  # PDF SERVICE - preavisos rollo y media carta
   # ==========================================================================
   pdf-service:
     build:
@@ -293,6 +335,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - CASSANDRA_HOSTS=cassandra-1,cassandra-2
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_KEYSPACE=semapa
     networks:
       - semapa-net
     depends_on:
@@ -300,7 +346,7 @@ services:
         condition: service_completed_successfully
 
   # ==========================================================================
-  # WORKERS DE NOTIFICACIÓN
+  # WORKER EMAIL
   # ==========================================================================
   worker-email:
     build:
@@ -310,6 +356,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-semapa}:${RABBITMQ_PASSWORD:-semapa}@rabbitmq:5672/
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+      - PDF_SERVICE_URL=http://pdf-service:8001
     networks:
       - semapa-net
     depends_on:
@@ -320,6 +371,9 @@ services:
       pdf-service:
         condition: service_started
 
+  # ==========================================================================
+  # WORKER SMS
+  # ==========================================================================
   worker-sms:
     build:
       context: ./services/worker-sms
@@ -328,12 +382,17 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-semapa}:${RABBITMQ_PASSWORD:-semapa}@rabbitmq:5672/
     networks:
       - semapa-net
     depends_on:
       rabbitmq:
         condition: service_healthy
 
+  # ==========================================================================
+  # WORKER WHATSAPP
+  # ==========================================================================
   worker-whatsapp:
     build:
       context: ./services/worker-whatsapp
@@ -342,6 +401,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-semapa}:${RABBITMQ_PASSWORD:-semapa}@rabbitmq:5672/
     networks:
       - semapa-net
     depends_on:
@@ -349,7 +410,7 @@ services:
         condition: service_healthy
 
   # ==========================================================================
-  # FRONTEND WEB (React + Vite, servido por nginx interno)
+  # FRONTEND WEB - React + Vite servido por Nginx interno
   # ==========================================================================
   web:
     build:
@@ -363,7 +424,8 @@ services:
       - semapa-net
 
   # ==========================================================================
-  # NGINX (reverse proxy + load balancer)
+  # NGINX - reverse proxy + load balancer
+  # Entrada principal: http://localhost
   # ==========================================================================
   nginx:
     image: nginx:alpine
@@ -376,7 +438,11 @@ services:
     networks:
       - semapa-net
     depends_on:
-      - api-1
-      - api-2
-      - web
-      - pdf-service
+      api-1:
+        condition: service_healthy
+      api-2:
+        condition: service_healthy
+      web:
+        condition: service_started
+      pdf-service:
+        condition: service_started
