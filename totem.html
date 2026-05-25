@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tótem SEMAPA - Consulta de Deuda</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #fdf8ef;
+      color: #0b2447;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      width: 100%;
+    }
+
+    body {
+      background: linear-gradient(135deg, #ffffff 0%, #f7f1e6 40%, #fdf8ef 100%);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+
+    .page {
+      width: min(1200px, 100%);
+      background: #ffffff;
+      border: 6px solid #0b2447;
+      border-radius: 32px;
+      padding: 30px;
+      box-shadow: 0 20px 60px rgba(11, 36, 71, 0.15);
+      max-height: 95vh;
+      overflow-y: auto;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .header h1 {
+      font-size: clamp(2.2rem, 5vw, 3.8rem);
+      margin: 0 0 8px;
+      letter-spacing: 0.08em;
+      color: #0b2447;
+    }
+
+    .header p {
+      margin: 8px auto 0;
+      max-width: 800px;
+      font-size: clamp(1.1rem, 2vw, 1.5rem);
+      color: #184569;
+      line-height: 1.4;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 24px;
+    }
+
+    .card {
+      background: #fbf7ee;
+      border: 4px solid #0b2447;
+      border-radius: 28px;
+      padding: 28px;
+    }
+
+    .label {
+      font-size: 1.8rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #0b2447;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .display {
+      width: 100%;
+      border-radius: 22px;
+      border: 4px solid #07315b;
+      padding: 20px 24px;
+      background: #ffffff;
+      color: #0b2447;
+      font-size: clamp(2.2rem, 5vw, 3.6rem);
+      text-align: center;
+      letter-spacing: 0.16em;
+      min-height: 2.5em;
+      font-weight: 800;
+      user-select: none;
+      font-family: 'Courier New', monospace;
+    }
+
+    .instructions {
+      margin-top: 16px;
+      font-size: 1.5rem;
+      line-height: 1.6;
+      color: #184569;
+    }
+
+    .keyboard {
+      display: grid;
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .keyboard-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+      gap: 10px;
+    }
+
+    button.key {
+      min-height: 80px;
+      border-radius: 20px;
+      border: 4px solid #0b2447;
+      background: #ffffff;
+      color: #0b2447;
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      font-weight: 900;
+      cursor: pointer;
+      transition: transform 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+      user-select: none;
+      box-shadow: 0 4px 12px rgba(11, 36, 71, 0.1);
+    }
+
+    button.key:hover,
+    button.key:focus-visible {
+      background: #e8f1ff;
+      transform: translateY(-3px);
+      box-shadow: 0 8px 20px rgba(11, 36, 71, 0.2);
+      outline: none;
+    }
+
+    button.key:active {
+      transform: translateY(-1px);
+    }
+
+    button.key:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    button.action {
+      min-height: 80px;
+      font-size: clamp(1.4rem, 2.5vw, 2rem);
+      font-weight: 800;
+      border-radius: 20px;
+      border: 4px solid #0b2447;
+      cursor: pointer;
+      background: #0b2447;
+      color: #ffffff;
+      transition: transform 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+      user-select: none;
+      box-shadow: 0 4px 12px rgba(11, 36, 71, 0.1);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    button.action:hover,
+    button.action:focus-visible {
+      background: #07315b;
+      transform: translateY(-3px);
+      box-shadow: 0 8px 20px rgba(11, 36, 71, 0.2);
+      outline: none;
+    }
+
+    button.action:active {
+      transform: translateY(-1px);
+    }
+
+    button.action.secondary {
+      background: #ffffff;
+      color: #0b2447;
+      border: 4px solid #0b2447;
+    }
+
+    button.action.secondary:hover {
+      background: #e8f1ff;
+    }
+
+    button.action:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .status {
+      margin-top: 18px;
+      min-height: 2.5rem;
+      font-size: clamp(1.4rem, 2vw, 1.8rem);
+      font-weight: 700;
+      color: #d62828;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    .status.success {
+      color: #1b6b3e;
+    }
+
+    .status.loading {
+      color: #184569;
+      font-style: italic;
+    }
+
+    .result-panel {
+      display: none;
+      margin-top: 12px;
+      gap: 20px;
+    }
+
+    .result-panel.visible {
+      display: grid;
+    }
+
+    .result-block {
+      background: #ffffff;
+      border-radius: 24px;
+      border: 3px solid #0b2447;
+      padding: 24px;
+    }
+
+    .result-block h2 {
+      margin: 0 0 16px;
+      font-size: clamp(1.8rem, 3vw, 2.4rem);
+      letter-spacing: 0.04em;
+      color: #0b2447;
+    }
+
+    .detail-grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    }
+
+    .detail-card {
+      background: #f3f7fb;
+      border-radius: 20px;
+      padding: 20px;
+      border: 3px solid #0b2447;
+      min-height: 160px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .detail-card .title {
+      font-size: 1.5rem;
+      margin-bottom: 12px;
+      color: #0b2447;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .detail-card .value {
+      font-size: clamp(2rem, 4vw, 2.8rem);
+      font-weight: 900;
+      line-height: 1.2;
+      color: #07315b;
+      font-family: 'Courier New', monospace;
+      word-break: break-word;
+    }
+
+    .estado-badge {
+      display: inline-block;
+      padding: 10px 16px;
+      border-radius: 12px;
+      font-size: 1.4rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-top: 8px;
+    }
+
+    .estado-badge.pendiente {
+      background: #fff3cd;
+      color: #664d03;
+      border: 2px solid #ffc107;
+    }
+
+    .estado-badge.pagada {
+      background: #d4edda;
+      color: #0f5132;
+      border: 2px solid #28a745;
+    }
+
+    .estado-badge.vencida {
+      background: #f8d7da;
+      color: #721c24;
+      border: 2px solid #f5c6cb;
+    }
+
+    .actions-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    .print-note {
+      font-size: 1.3rem;
+      color: #184569;
+      margin-top: 12px;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    @media (max-width: 900px) {
+      .main-grid,
+      .actions-row {
+        grid-template-columns: 1fr;
+      }
+      
+      .keyboard-row {
+        grid-template-columns: repeat(3, 1fr);
+      }
+    }
+
+    @media print {
+      body {
+        background: white;
+        padding: 0;
+      }
+      
+      .page {
+        box-shadow: none;
+        border: none;
+        padding: 0;
+        max-height: 100%;
+      }
+      
+      .keyboard,
+      .actions-row,
+      .print-note,
+      .instructions {
+        display: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page" role="main" aria-label="Tótem SEMAPA de consulta de deuda">
+    <section class="header" aria-labelledby="top-title">
+      <h1 id="top-title">🌊 SEMAPA</h1>
+      <p>Consulta tu deuda de agua. Usa los botones numéricos para ingresar tu número de contrato.</p>
+    </section>
+
+    <section class="main-grid">
+      <div class="card" aria-labelledby="input-label">
+        <div>
+          <div class="label" id="input-label">Número de contrato</div>
+          <div id="display" class="display" role="status" aria-live="assertive" aria-atomic="true">
+            &nbsp;
+          </div>
+          <p class="instructions">
+            Haz clic en los números para escribir tu contrato. 
+            Si necesitas corregir, usa <strong>Borrar</strong> o <strong>Limpiar</strong>.
+          </p>
+        </div>
+
+        <div class="keyboard" aria-label="Teclado virtual numérico">
+          <div class="keyboard-row">
+            <button type="button" class="key" data-key="1" aria-label="Número 1">1</button>
+            <button type="button" class="key" data-key="2" aria-label="Número 2">2</button>
+            <button type="button" class="key" data-key="3" aria-label="Número 3">3</button>
+          </div>
+          <div class="keyboard-row">
+            <button type="button" class="key" data-key="4" aria-label="Número 4">4</button>
+            <button type="button" class="key" data-key="5" aria-label="Número 5">5</button>
+            <button type="button" class="key" data-key="6" aria-label="Número 6">6</button>
+          </div>
+          <div class="keyboard-row">
+            <button type="button" class="key" data-key="7" aria-label="Número 7">7</button>
+            <button type="button" class="key" data-key="8" aria-label="Número 8">8</button>
+            <button type="button" class="key" data-key="9" aria-label="Número 9">9</button>
+          </div>
+          <div class="keyboard-row">
+            <button type="button" class="key" data-key="0" style="grid-column: span 3;">0</button>
+          </div>
+          <div class="keyboard-row">
+            <button id="backspace" type="button" class="action secondary" aria-label="Borrar el último número">← BORRAR</button>
+            <button id="clear" type="button" class="action secondary" aria-label="Limpiar todo">LIMPIAR</button>
+            <button id="consult" type="button" class="action" aria-label="Consultar deuda">CONSULTAR</button>
+          </div>
+        </div>
+
+        <div class="status" id="statusMessage" role="status" aria-live="polite" aria-atomic="true"></div>
+      </div>
+
+      <div class="result-panel" id="resultPanel" aria-live="polite" aria-label="Resultados de la consulta">
+        <div class="result-block">
+          <h2>Tu deuda actual</h2>
+          <div class="detail-grid">
+            <div class="detail-card">
+              <div class="title">Contrato</div>
+              <div class="value" id="resultContrato">—</div>
+            </div>
+            <div class="detail-card">
+              <div class="title">Periodo</div>
+              <div class="value" id="resultPeriodo">—</div>
+            </div>
+            <div class="detail-card">
+              <div class="title">Deuda (Bs)</div>
+              <div class="value" id="resultMonto">—</div>
+            </div>
+            <div class="detail-card">
+              <div class="title">Vencimiento</div>
+              <div class="value" id="resultVencimiento">—</div>
+            </div>
+            <div class="detail-card">
+              <div class="title">Consumo</div>
+              <div class="value" id="resultConsumo">—</div>
+            </div>
+            <div class="detail-card">
+              <div class="title">Estado</div>
+              <div id="resultEstado">—</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions-row">
+          <button id="printButton" type="button" class="action">🖨️ IMPRIMIR</button>
+          <button id="newSearch" type="button" class="action secondary">🔄 NUEVA CONSULTA</button>
+        </div>
+        <p class="print-note">Si necesitas ayuda, acércate al personal de SEMAPA. ¡Gracias!</p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    'use strict';
+
+    // Configuración
+    const API_BASE = 'http://localhost:8000/api/v1';
+    const MAX_CONTRATO_LENGTH = 20;
+
+    // Elements
+    const display = document.getElementById('display');
+    const statusMessage = document.getElementById('statusMessage');
+    const resultPanel = document.getElementById('resultPanel');
+    const resultContrato = document.getElementById('resultContrato');
+    const resultPeriodo = document.getElementById('resultPeriodo');
+    const resultMonto = document.getElementById('resultMonto');
+    const resultVencimiento = document.getElementById('resultVencimiento');
+    const resultConsumo = document.getElementById('resultConsumo');
+    const resultEstado = document.getElementById('resultEstado');
+    const consultButton = document.getElementById('consult');
+    const clearButton = document.getElementById('clear');
+    const backspaceButton = document.getElementById('backspace');
+    const printButton = document.getElementById('printButton');
+    const newSearch = document.getElementById('newSearch');
+
+    const keyButtons = Array.from(document.querySelectorAll('button.key'));
+
+    // State
+    let currentInput = '';
+    let isLoading = false;
+
+    // Functions
+    function updateDisplay() {
+      display.textContent = currentInput || '\u00A0';
+      display.setAttribute('aria-label', currentInput ? `Contrato: ${currentInput}` : 'Campo vacío');
+      consultButton.disabled = currentInput.trim().length === 0;
+    }
+
+    function appendCharacter(char) {
+      if (currentInput.length >= MAX_CONTRATO_LENGTH) return;
+      if (!/^\d$/.test(char)) return; // Solo números
+      currentInput += char;
+      updateDisplay();
+    }
+
+    function removeLastCharacter() {
+      currentInput = currentInput.slice(0, -1);
+      updateDisplay();
+    }
+
+    function clearInput() {
+      currentInput = '';
+      updateDisplay();
+      resultPanel.classList.remove('visible');
+      statusMessage.textContent = '';
+      statusMessage.className = 'status';
+    }
+
+    function setStatus(message, type = 'error') {
+      statusMessage.textContent = message;
+      statusMessage.className = `status ${type}`;
+    }
+
+    function formatMonto(value) {
+      if (!value) return '—';
+      const num = typeof value === 'string' ? parseFloat(value.replace(',', '.')) : value;
+      if (isNaN(num)) return String(value);
+      return new Intl.NumberFormat('es-BO', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(num);
+    }
+
+    function formatDate(isoStr) {
+      if (!isoStr) return '—';
+      try {
+        const date = new Date(isoStr);
+        if (isNaN(date.getTime())) return isoStr;
+        return date.toLocaleDateString('es-BO', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      } catch {
+        return isoStr;
+      }
+    }
+
+    function getEstadoBadgeClass(estado) {
+      const normalized = (estado || '').toUpperCase();
+      if (normalized === 'PAGADA') return 'pagada';
+      if (normalized === 'VENCIDA') return 'vencida';
+      if (normalized === 'PENDIENTE') return 'pendiente';
+      return 'pendiente';
+    }
+
+    async function consultContrato() {
+      const contrato = currentInput.trim();
+      if (!contrato) {
+        setStatus('⚠️ Ingresa tu número de contrato antes de consultar.');
+        return;
+      }
+
+      if (!/^\d+$/.test(contrato)) {
+        setStatus('⚠️ Solo se permiten números en el contrato.');
+        return;
+      }
+
+      isLoading = true;
+      setStatus('🔍 Buscando tu deuda...', 'loading');
+      resultPanel.classList.remove('visible');
+      consultButton.disabled = true;
+      clearButton.disabled = true;
+      backspaceButton.disabled = true;
+      keyButtons.forEach(btn => btn.disabled = true);
+
+      try {
+        const url = `${API_BASE}/facturas/${encodeURIComponent(contrato)}/ultima`;
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+        });
+
+        if (response.status === 404) {
+          setStatus(`❌ Número de contrato "${contrato}" no encontrado. Por favor, verifica el número e intenta nuevamente.`);
+          return;
+        }
+
+        if (!response.ok) {
+          const text = await response.text();
+          console.error('API Error:', response.status, text);
+          setStatus('⚠️ Error del servidor. Por favor, intenta más tarde.');
+          return;
+        }
+
+        const data = await response.json();
+        showResult(data);
+      } catch (error) {
+        console.error('Fetch error:', error);
+        setStatus('❌ No se pudo conectar con el servidor. Verifica tu conexión e intenta nuevamente.');
+      } finally {
+        isLoading = false;
+        consultButton.disabled = false;
+        clearButton.disabled = false;
+        backspaceButton.disabled = false;
+        keyButtons.forEach(btn => btn.disabled = false);
+      }
+    }
+
+    function showResult(data) {
+      // Tolerante a varias formas de nombrar campos (numero_contrato / contrato)
+      const contratoVal = data.numero_contrato || data.contrato || data.contrato_numero || '—';
+      resultContrato.textContent = String(contratoVal);
+
+      const periodoVal = data.periodo || data.periodo_factura || data.period || '—';
+      resultPeriodo.textContent = String(periodoVal);
+
+      const montoVal = data.monto_bs || data.monto || data.total_bs || data.deuda_bs || null;
+      resultMonto.textContent = formatMonto(montoVal);
+
+      const consumoVal = data.consumo_m3 || data.consumo || null;
+      resultConsumo.textContent = (consumoVal ? `${formatMonto(consumoVal)} m³` : '—');
+
+      // Vencimiento: si existe, usar; si no, calcular desde emision + 15 días
+      let vencimiento = data.vencimiento || data.fecha_vencimiento || data.fecha_vto || data.fecha_limite;
+      if (!vencimiento && data.fecha_emision) {
+        try {
+          const emision = new Date(data.fecha_emision);
+          const vto = new Date(emision);
+          vto.setDate(vto.getDate() + 15);
+          vencimiento = vto.toISOString().split('T')[0];
+        } catch (e) {
+          vencimiento = null;
+        }
+      }
+      resultVencimiento.textContent = formatDate(vencimiento);
+
+      const estado = String(data.estado || data.estatus || 'PENDIENTE').toUpperCase();
+      const badgeClass = getEstadoBadgeClass(estado);
+      resultEstado.innerHTML = `<div class="estado-badge ${badgeClass}">${estado}</div>`;
+
+      resultPanel.classList.add('visible');
+      setStatus('✅ Consulta exitosa. Aquí está tu información.', 'success');
+    }
+
+    // Event listeners
+    keyButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        appendCharacter(button.dataset.key || '');
+      });
+    });
+
+    backspaceButton.addEventListener('click', removeLastCharacter);
+    clearButton.addEventListener('click', clearInput);
+    consultButton.addEventListener('click', consultContrato);
+
+    printButton.addEventListener('click', () => {
+      if (!resultPanel.classList.contains('visible')) {
+        setStatus('⚠️ Primero consulta tu contrato.');
+        return;
+      }
+      window.print();
+    });
+
+    newSearch.addEventListener('click', clearInput);
+
+    // Keyboard support (physical keyboard)
+    document.addEventListener('keydown', (e) => {
+      if (isLoading) return;
+      if (/^\d$/.test(e.key)) {
+        appendCharacter(e.key);
+      } else if (e.key === 'Backspace') {
+        e.preventDefault();
+        removeLastCharacter();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        consultContrato();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        clearInput();
+      }
+    });
+
+    // Initialize
+    updateDisplay();
+  </script>
+</body>
+</html>
+
