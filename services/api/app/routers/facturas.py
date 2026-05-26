@@ -23,6 +23,31 @@ def _load_tarifa_service() -> TarifaService:
     return TarifaService(tarifas_desde_filas(rows))
 
 
+@router.get("/{numero_contrato}/ultima")
+async def obtener_ultima_factura(numero_contrato: int):
+    """Obtiene la última factura de un contrato (endpoint público para tótem)."""
+    rows = list(cassandra_client.execute_raw(
+        "SELECT * FROM facturas WHERE numero_contrato = %s ORDER BY periodo DESC LIMIT 1",
+        (numero_contrato,)
+    ))
+    if not rows:
+        raise HTTPException(404, "Contrato no encontrado o sin facturas")
+    r = rows[0]
+    return {
+        "numero_contrato": r["numero_contrato"],
+        "periodo": r["periodo"],
+        "factura_id": str(r["factura_id"]),
+        "consumo_m3": str(r["consumo_m3"]),
+        "monto_usd": str(r["monto_usd"]),
+        "monto_bs": str(r["monto_bs"]),
+        "categoria_tarifa": r["categoria_tarifa"],
+        "estado": r["estado"],
+        "fecha_emision": r["fecha_emision"].isoformat() if hasattr(r["fecha_emision"], 'isoformat') else str(r["fecha_emision"]),
+        "vencimiento": (r["fecha_emision"] + __import__('datetime').timedelta(days=15)).isoformat() if hasattr(r["fecha_emision"], 'isoformat') else None,
+        "desglose": r.get("desglose"),
+    }
+
+
 @router.get("/{numero_contrato}/{periodo}", response_model=FacturaOut)
 async def obtener_factura(numero_contrato: int, periodo: str, _u: dict = Depends(current_user)):
     rows = list(cassandra_client.execute("factura_get", (numero_contrato, periodo)))

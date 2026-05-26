@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     API_PORT: int = 8000
     API_WORKERS: int = 2
     API_LOG_LEVEL: str = "INFO"
-    API_CORS_ORIGINS: str = "http://localhost,http://localhost:5173"
+    API_CORS_ORIGINS: str = "http://localhost,http://localhost:5173,http://localhost:8001"
 
     # USD (apilayer.exchangerate.host)
     USD_API_URL: str = "https://api.exchangerate.host/live?source=USD&currencies=BOB"
