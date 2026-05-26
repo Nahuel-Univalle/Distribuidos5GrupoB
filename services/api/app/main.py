@@ -11,6 +11,7 @@ from loguru import logger
 
 from app.core.cassandra_client import cassandra_client
 from app.core.config import settings
+from app.routers import consultas
 from app.core.middleware import JsonLogMiddleware, RateLimitMiddleware
 from app.core.redis_client import redis_client
 from app.routers import (anomalias, auth, buscar, consultas, dashboard,
@@ -73,3 +74,4 @@ app.include_router(lecturas.router, prefix="/api/v1/lecturas", tags=["lecturas"]
 app.include_router(mapa.router, prefix="/api/v1/mapa", tags=["mapa"])
 app.include_router(kiosk.router, prefix="/api/v1/kiosk", tags=["kiosk"])
 app.include_router(anomalias.router, prefix="/api/v1/anomalias", tags=["anomalias"])
+
