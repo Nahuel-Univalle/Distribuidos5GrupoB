@@ -4,7 +4,7 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 
 import LoginScreen from "./src/screens/LoginScreen";
-import HomeScreen from "./src/screens/HomeScreen";
+
 import LecturaScreen from "./src/screens/LecturaScreen";
 import HistorialScreen from "./src/screens/HistorialScreen";
 import { useAuthStore } from "./src/store/auth";
@@ -28,7 +28,7 @@ export default function App() {
           <Stack.Screen name="Login" component={LoginScreen} options={{ headerShown: false }} />
         ) : (
           <>
-            <Stack.Screen name="Home" component={HomeScreen} options={{ title: "SEMAPA" }} />
+           
             <Stack.Screen name="Lectura" component={LecturaScreen} options={{ title: "Lectura manual" }} />
             <Stack.Screen name="Historial" component={HistorialScreen} options={{ title: "Historial" }} />
           </>
