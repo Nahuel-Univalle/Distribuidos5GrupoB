@@ -1,8 +1,8 @@
-"""Endpoints geoespaciales para el dashboard de mapa.
+﻿"""Endpoints geoespaciales para el dashboard de mapa.
 
 No dependen de descargar el mapa digital municipal. El frontend usa una capa
 GeoJSON aproximada generada desde el Excel/CSV y estos endpoints le agregan
-estadísticas reales desde Cassandra.
+estadÃ­sticas reales desde Cassandra.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def _safe_uuid(v: Any) -> Any:
 # (lat_min, lat_max, lon_min, lon_max)
 CERCADO_STRICT_BOUNDS = (-17.5120, -17.3180, -66.2380, -66.1080)
 
-# Polígono conservador del municipio Cercado para filtro/fallback visual.
+# PolÃ­gono conservador del municipio Cercado para filtro/fallback visual.
 CERCADO_RING = [
     (-17.3180, -66.1600),
     (-17.3360, -66.1250),
@@ -55,7 +55,7 @@ CERCADO_RING = [
 ]
 
 # Centros seguros por clave compuesta (distrito_id, zona_id), derivados de la
-# tabla territorial de la presentación de Práctica 5. No usar zona_id solo.
+# tabla territorial de la presentaciÃ³n de PrÃ¡ctica 5. No usar zona_id solo.
 SAFE_ZONE_CENTERS: dict[tuple[int, int], tuple[float, float]] = {
     (1, 24): (-17.3845, -66.1315), (1, 25): (-17.3860, -66.1230), (1, 26): (-17.3900, -66.1280),
     (2, 1): (-17.3815, -66.1780), (2, 3): (-17.3790, -66.1690), (2, 22): (-17.3730, -66.1800), (2, 23): (-17.3760, -66.1680), (2, 24): (-17.3820, -66.1610),
@@ -124,7 +124,7 @@ def _zone_center(distrito_id: Any, zona_id: Any) -> tuple[float, float]:
 
 
 def _safe_point_for_row(row: dict, prefix: str = "med") -> tuple[float, float]:
-    # API defensiva: aunque Cassandra aún tenga coordenadas viejas, el mapa se
+    # API defensiva: aunque Cassandra aÃºn tenga coordenadas viejas, el mapa se
     # pinta con coordenadas seguras por distrito+zona.
     import hashlib, math
     center = _zone_center(row.get("distrito_id"), row.get("zona_id"))
@@ -193,7 +193,7 @@ async def resumen_mapa(_u: dict = Depends(current_user)):
             "medidores": total,
             "activos": estados.get("ACTIVO", 0),
             "fuera_servicio": estados.get("FUERA_SERVICIO", 0),
-            "historicos": estados.get("REEMPLAZADO", 0) + estados.get("DAÑADO", 0) + estados.get("RETIRADO", 0),
+            "historicos": estados.get("REEMPLAZADO", 0) + estados.get("DAÃ‘ADO", 0) + estados.get("RETIRADO", 0),
             "por_estado": dict(estados),
             "por_categoria": dict(categorias),
             "gateways_con_medidores": len([g for g, n in gateways.items() if g and n]),
@@ -210,7 +210,7 @@ async def zonas_mapa(
     gateway_id: int | None = Query(default=None),
     _u: dict = Depends(current_user),
 ):
-    """Estadísticas por distrito/zona para pintar mapa.
+    """EstadÃ­sticas por distrito/zona para pintar mapa.
 
     IMPORTANTE: aplica los mismos filtros que el frontend. Si el usuario elige
     Distrito 1, R3 o FUERA_SERVICIO, las zonas/burbujas que no tienen registros
@@ -283,10 +283,10 @@ async def zonas_mapa(
                 item["activos"] += 1
             elif est == "FUERA_SERVICIO":
                 item["fuera_servicio"] += 1
-            elif est in {"REEMPLAZADO", "DAÑADO", "RETIRADO"}:
+            elif est in {"REEMPLAZADO", "DAÃ‘ADO", "RETIRADO"}:
                 item["historicos"] += 1
 
-        # Consumo: se filtra por distrito/zona y categoría cuando sea posible.
+        # Consumo: se filtra por distrito/zona y categorÃ­a cuando sea posible.
         for r in cassandra_client.execute_raw(
             "SELECT distrito_id, zona_id, categoria_tarifa, consumo_litros FROM lecturas_por_zona_dia",
             profile="analytics",
@@ -366,7 +366,7 @@ async def medidores_sample(
     def _q():
         rows = cassandra_client.execute_raw(
             f"SELECT medidor_id, mac, numero_serie, numero_contrato, estado, categoria_tarifa, "
-            f"gateway_id, distrito_id, zona_id, latitud, longitud, fecha_instalacion, motivo_estado "
+            f"gateway_id, distrito_id, zona_id, latitud, longitud, fecha_instalacion "
             f"FROM medidores",
             profile="analytics",
         )
@@ -393,3 +393,4 @@ async def medidores_sample(
                 break
         return out
     return await _cached(f"mapa:sample:{limit}:{estado}:{distrito_id}:{zona_id}:{categoria}:{gateway_id}", _q, ttl=60)
+

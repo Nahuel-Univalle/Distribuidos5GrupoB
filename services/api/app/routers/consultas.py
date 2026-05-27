@@ -1,14 +1,14 @@
-"""Las 25 consultas del enunciado - SEMAPA Smart Water Cochabamba.
+﻿"""Las 25 consultas del enunciado - SEMAPA Smart Water Cochabamba.
 
-Implementación con CL=ONE para analítica + cache Redis (TTL 60s) en las más
+ImplementaciÃ³n con CL=ONE para analÃ­tica + cache Redis (TTL 60s) en las mÃ¡s
 pesadas para mantener latencia razonable contra el dataset masivo.
 
 Modelo de datos:
-- lecturas_por_medidor: (medidor_id, anio_mes) → timestamp → consumo_litros
-- lecturas_por_zona_dia: (distrito_id, zona_id, fecha) → hora, medidor_id → consumo_litros
-- medidores: medidor_id → número_serie, modelo_id, categoria_tarifa, estado, etc.
-- facturas: (numero_contrato, periodo) → consumo_m3, monto_usd
-- tarifas: categoria → fijo_m3, usd_mes, r_13_25, etc.
+- lecturas_por_medidor: (medidor_id, anio_mes) â†’ timestamp â†’ consumo_litros
+- lecturas_por_zona_dia: (distrito_id, zona_id, fecha) â†’ hora, medidor_id â†’ consumo_litros
+- medidores: medidor_id â†’ nÃºmero_serie, modelo_id, categoria_tarifa, estado, etc.
+- facturas: (numero_contrato, periodo) â†’ consumo_m3, monto_usd
+- tarifas: categoria â†’ fijo_m3, usd_mes, r_13_25, etc.
 """
 from __future__ import annotations
 
@@ -54,6 +54,8 @@ async def _cached(key: str, fn, ttl: int = CACHE_TTL):
 # ============================================================================
 # CONSULTA 1: Consumo promedio por distrito en un rango de horas
 # ============================================================================
+@router.get("/consumo-promedio-distrito")
+@router.get("/horas-pico")
 @router.get("/consultas/1")
 async def query_1_consumo_promedio_distrito(
     horas: int = Query(8, ge=1, le=24, description="Rango de horas (default 8h)"),
@@ -65,8 +67,8 @@ async def query_1_consumo_promedio_distrito(
     Ejemplo respuesta:
     ```json
     [
-      {"distrito": "TUNARI", "rango": "0-8h", "consumo_m3": 1254.004, "unidad": "m³"},
-      {"distrito": "TUNARI", "rango": "8-16h", "consumo_m3": 6854.221, "unidad": "m³"}
+      {"distrito": "TUNARI", "rango": "0-8h", "consumo_m3": 1254.004, "unidad": "mÂ³"},
+      {"distrito": "TUNARI", "rango": "8-16h", "consumo_m3": 6854.221, "unidad": "mÂ³"}
     ]
     ```
     """
@@ -106,7 +108,7 @@ async def query_1_consumo_promedio_distrito(
         
         result = []
         for (distrito, rango), total_litros in sorted(agg.items()):
-            consumo_m3 = total_litros / 1_000_000  # Convertir a m³
+            consumo_m3 = total_litros / 1_000_000  # Convertir a mÂ³
             muestras = count[(distrito, rango)]
             result.append({
                 "distrito": distrito,
@@ -114,7 +116,7 @@ async def query_1_consumo_promedio_distrito(
                 "consumo_m3": round(consumo_m3, 2),
                 "muestras": muestras,
                 "consumo_promedio_litros": round(total_litros / muestras, 0) if muestras > 0 else 0,
-                "unidad": "m³"
+                "unidad": "mÂ³"
             })
         
         return result
@@ -123,7 +125,7 @@ async def query_1_consumo_promedio_distrito(
 
 
 # ============================================================================
-# CONSULTA 2: Comparativa de consumo entre últimas 4 semanas de 3+ distritos
+# CONSULTA 2: Comparativa de consumo entre Ãºltimas 4 semanas de 3+ distritos
 # ============================================================================
 @router.get("/consultas/2")
 async def query_2_comparativa_semanas(
@@ -131,7 +133,7 @@ async def query_2_comparativa_semanas(
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna consumo por semana de los últimos 28 días para cada distrito.
+    Retorna consumo por semana de los Ãºltimos 28 dÃ­as para cada distrito.
     
     Ejemplo: GET /consultas/2?distritos=1,2,3
     """
@@ -185,26 +187,27 @@ async def query_2_comparativa_semanas(
 
 
 # ============================================================================
-# CONSULTA 3: Identificación de contratos con consumo excesivo (>45 m³/mes)
+# CONSULTA 3: IdentificaciÃ³n de contratos con consumo excesivo (>45 mÂ³/mes)
 # ============================================================================
+@router.get("/consumos-excesivos")
 @router.get("/consultas/3")
 async def query_3_consumos_excesivos(
-    umbral_m3: float = Query(45.0, description="Umbral en m³/mes (default 45)"),
+    umbral_m3: float = Query(45.0, description="Umbral en mÂ³/mes (default 45)"),
     _u: dict = Depends(current_user),
 ):
     """
-    Identifica contratos residenciales con consumo > umbral (ONU estándar).
+    Identifica contratos residenciales con consumo > umbral (ONU estÃ¡ndar).
     
-    Lógica: 300 L/día * 30 días * 5 personas = 45 m³/mes
-    Cualquier consumo > 45 m³/mes se marca como excesivo.
+    LÃ³gica: 300 L/dÃ­a * 30 dÃ­as * 5 personas = 45 mÂ³/mes
+    Cualquier consumo > 45 mÂ³/mes se marca como excesivo.
     """
     def _q():
-        umbral_litros = umbral_m3 * 1_000_000  # Convertir m³ a litros
+        umbral_litros = umbral_m3 * 1_000_000  # Convertir mÂ³ a litros
         
         agg: dict[str, dict[str, Any]] = {}
         
-        # Aquí necesitaríamos joins, pero Cassandra no soporta JOINs directamente
-        # Simulación: leer medidores residenciales y sumar consumo
+        # AquÃ­ necesitarÃ­amos joins, pero Cassandra no soporta JOINs directamente
+        # SimulaciÃ³n: leer medidores residenciales y sumar consumo
         medidor_consumo: dict[str, int] = defaultdict(int)
         medidor_info: dict[str, dict] = {}
         
@@ -417,12 +420,13 @@ async def query_6_modelos_fallas(
 # ============================================================================
 # CONSULTA 7: Consumo promedio mensual por tarifa y distrito
 # ============================================================================
+@router.get("/distribucion-categorias")
 @router.get("/consultas/7")
 async def query_7_consumo_tarifa_distrito(
     _u: dict = Depends(current_user),
 ):
     """
-    Matriz: consumo promedio (m³) por tipo de tarifa (filas) y distrito (columnas).
+    Matriz: consumo promedio (mÂ³) por tipo de tarifa (filas) y distrito (columnas).
     """
     def _q():
         distrito_names = {}
@@ -466,15 +470,15 @@ async def query_7_consumo_tarifa_distrito(
 
 
 # ============================================================================
-# CONSULTA 8: Zonas con más medidores con consumo anómalo
+# CONSULTA 8: Zonas con mÃ¡s medidores con consumo anÃ³malo
 # ============================================================================
 @router.get("/consultas/8")
 async def query_8_zonas_anomalas(
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna zonas con mayor cantidad de consumo anómalo (cero o excesivo)
-    con distribución geográfica.
+    Retorna zonas con mayor cantidad de consumo anÃ³malo (cero o excesivo)
+    con distribuciÃ³n geogrÃ¡fica.
     """
     def _q():
         distrito_names = {}
@@ -517,7 +521,7 @@ async def query_8_zonas_anomalas(
             key = (d_id, z_id)
             agg[key]["total"] += 1
             
-            # Anomalía: consumo = 0 o consumo > 2x promedio esperado (asumiendo 100L/persona/día)
+            # AnomalÃ­a: consumo = 0 o consumo > 2x promedio esperado (asumiendo 100L/persona/dÃ­a)
             if consumo == 0:
                 agg[key]["cero"] += 1
             elif consumo > 10_000_000:  # > 10M litros es claramente excesivo
@@ -547,7 +551,7 @@ async def query_8_zonas_anomalas(
 
 
 # ============================================================================
-# CONSULTA 9: Lecturas fallidas o inconsistentes último mes
+# CONSULTA 9: Lecturas fallidas o inconsistentes Ãºltimo mes
 # ============================================================================
 @router.get("/consultas/9")
 async def query_9_lecturas_fallidas(
@@ -580,13 +584,13 @@ async def query_9_lecturas_fallidas(
                 f"SELECT medidor_id, status FROM lecturas_por_medidor WHERE anio_mes = {anio_mes}",
                 profile="analytics"
             ):
-                # Necesitaríamos obtener modelo_id del medidor
-                # Por ahora simular conteo genérico
+                # NecesitarÃ­amos obtener modelo_id del medidor
+                # Por ahora simular conteo genÃ©rico
                 pass
         except Exception:
             pass
         
-        # Simulación: retornar datos sintéticos
+        # SimulaciÃ³n: retornar datos sintÃ©ticos
         result = [
             {
                 "modelo_id": 1,
@@ -614,15 +618,15 @@ async def query_9_lecturas_fallidas(
 
 
 # ============================================================================
-# CONSULTA 10: Porcentaje de medidores con >4 años de antigüedad
+# CONSULTA 10: Porcentaje de medidores con >4 anios de antigÃ¼edad
 # ============================================================================
 @router.get("/consultas/10")
 async def query_10_medidores_antiguedad(
-    anios: int = Query(4, ge=1, le=20, description="Años de antigüedad mínimo"),
+    anios: int = Query(4, ge=1, le=20, description="Anios de antigÃ¼edad mÃ­nimo"),
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna porcentaje de medidores instalados hace más de N años.
+    Retorna porcentaje de medidores instalados hace mÃ¡s de N anios.
     """
     def _q():
         cutoff = date.today() - timedelta(days=365 * anios)
@@ -644,7 +648,7 @@ async def query_10_medidores_antiguedad(
         return {
             "total_medidores": total,
             "medidores_antiguos": antiguos,
-            "años_minimo": anios,
+            "anios_minimo": anios,
             "fecha_cutoff": str(cutoff),
             "porcentaje": round(pct, 2)
         }
@@ -653,18 +657,18 @@ async def query_10_medidores_antiguedad(
 
 
 # ============================================================================
-# CONSULTA 11: Zonas con mayor consumo per cápita por categoría residencial
+# CONSULTA 11: Zonas con mayor consumo per cÃ¡pita por categorÃ­a residencial
 # ============================================================================
 @router.get("/consultas/11")
 async def query_11_per_capita_residencial(
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna consumo per cápita por categoría residencial (R1, R2, R3, R4) en cada zona.
-    Per cápita = consumo total zona / habitantes estimados
+    Retorna consumo per cÃ¡pita por categorÃ­a residencial (R1, R2, R3, R4) en cada zona.
+    Per cÃ¡pita = consumo total zona / habitantes estimados
     """
     def _q():
-        # Obtener población por distrito
+        # Obtener poblaciÃ³n por distrito
         pop_distrito: dict[int, int] = {}
         try:
             for r in cassandra_client.execute_raw(
@@ -702,7 +706,7 @@ async def query_11_per_capita_residencial(
         
         result = []
         for (d_id, z_id, tarifa), consumo_total in sorted(consumo_por_zona.items()):
-            pop = pop_distrito.get(d_id, 1)  # Evitar división por cero
+            pop = pop_distrito.get(d_id, 1)  # Evitar divisiÃ³n por cero
             zona_nombre = zona_names.get((d_id, z_id), f"Zona {z_id}")
             
             per_capita_litros = consumo_total / pop if pop > 0 else 0
@@ -728,8 +732,9 @@ async def query_11_per_capita_residencial(
 
 
 # ============================================================================
-# CONSULTA 12: Top 3 clientes/servicios que más consumen por distrito
+# CONSULTA 12: Top 3 clientes/servicios que mÃ¡s consumen por distrito
 # ============================================================================
+@router.get("/top3-consumidores-distrito")
 @router.get("/consultas/12")
 async def query_12_top3_consumidores(
     _u: dict = Depends(current_user),
@@ -800,7 +805,7 @@ async def query_12_top3_consumidores(
 
 
 # ============================================================================
-# CONSULTA 13: Zonas que requieren renovación por errores reportados
+# CONSULTA 13: Zonas que requieren renovaciÃ³n por errores reportados
 # ============================================================================
 @router.get("/consultas/13")
 async def query_13_zonas_renovacion(
@@ -808,7 +813,7 @@ async def query_13_zonas_renovacion(
 ):
     """
     Retorna zonas ordenadas por cantidad de errores reportados.
-    Zonas con muchos errores deberían renovar medidores.
+    Zonas con muchos errores deberÃ­an renovar medidores.
     """
     def _q():
         distrito_names = {}
@@ -882,7 +887,7 @@ async def query_14_zonas_errores_por_distrito(
     _u: dict = Depends(current_user),
 ):
     """
-    CONSULTA SORPRESA 1: Para un distrito específico, listar zonas ordenadas
+    CONSULTA SORPRESA 1: Para un distrito especÃ­fico, listar zonas ordenadas
     por cantidad de errores/fallos reportados.
     """
     def _q():
@@ -926,12 +931,13 @@ async def query_14_zonas_errores_por_distrito(
 # ============================================================================
 # CONSULTA 15: Cobertura de antenas por zona (medidores por radiobase)
 # ============================================================================
+@router.get("/cobertura-antenas")
 @router.get("/consultas/15")
 async def query_15_cobertura_antenas(
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna cobertura de cada antena/gateway: cuántos medidores reportan
+    Retorna cobertura de cada antena/gateway: cuÃ¡ntos medidores reportan
     desde cada radiobase.
     """
     def _q():
@@ -982,15 +988,15 @@ async def query_15_cobertura_antenas(
 
 
 # ============================================================================
-# CONSULTA 16: Proyección de demanda a 5 años (crecimiento poblacional 2.6%)
+# CONSULTA 16: ProyecciÃ³n de demanda a 5 anios (crecimiento poblacional 2.6%)
 # ============================================================================
 @router.get("/consultas/16")
 async def query_16_proyeccion_demanda(
-    crecimiento_anual_pct: float = Query(2.6, description="Crecimiento poblacional %/año"),
+    crecimiento_anual_pct: float = Query(2.6, description="Crecimiento poblacional %/anio"),
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna proyección de demanda de agua para próximos 5 años por distrito,
+    Retorna proyecciÃ³n de demanda de agua para prÃ³ximos 5 anios por distrito,
     basada en crecimiento poblacional anual.
     """
     def _q():
@@ -1017,19 +1023,19 @@ async def query_16_proyeccion_demanda(
         factor_crecimiento = 1 + (crecimiento_anual_pct / 100)
         result = []
         
-        año_actual = date.today().year
+        anio_actual = date.today().year
         for d_id, consumo_m3 in sorted(consumo_actual.items()):
-            consumo_m3 = consumo_m3 / 1_000_000  # Convertir litros a m³
+            consumo_m3 = consumo_m3 / 1_000_000  # Convertir litros a mÂ³
             
             proyecciones = {
                 "distrito": distrito_names.get(d_id, f"Distrito {d_id}"),
                 "consumo_2025_m3": round(consumo_m3, 2)
             }
             
-            for año_offset in range(1, 6):
-                año = año_actual + año_offset
-                consumo_proyectado = consumo_m3 * (factor_crecimiento ** año_offset)
-                proyecciones[f"consumo_{año}_m3"] = round(consumo_proyectado, 2)
+            for anio_offset in range(1, 6):
+                anio = anio_actual + anio_offset
+                consumo_proyectado = consumo_m3 * (factor_crecimiento ** anio_offset)
+                proyecciones[f"consumo_{anio}_m3"] = round(consumo_proyectado, 2)
             
             result.append(proyecciones)
         
@@ -1048,7 +1054,7 @@ async def query_17_impacto_cambio_tarifa(
     _u: dict = Depends(current_user),
 ):
     """
-    CONSULTA SORPRESA 2: Simula impacto de cambio de categoría de tarifa en ingresos mensuales.
+    CONSULTA SORPRESA 2: Simula impacto de cambio de categorÃ­a de tarifa en ingresos mensuales.
     """
     def _q():
         # Obtener tarifas y precios
@@ -1102,14 +1108,15 @@ async def query_17_impacto_cambio_tarifa(
 # ============================================================================
 # CONSULTA 18: Medidores que no reportaron su consumo
 # ============================================================================
+@router.get("/medidores-sin-reporte")
 @router.get("/consultas/18")
 async def query_18_medidores_sin_reporte(
-    dias: int = Query(7, ge=1, le=30, description="Días sin reporte"),
+    dias: int = Query(7, ge=1, le=30, description="DÃ­as sin reporte"),
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna medidores que no han reportado en los últimos N días.
-    Mostrar: zona, distrito, dirección, número de serie.
+    Retorna medidores que no han reportado en los Ãºltimos N dÃ­as.
+    Mostrar: zona, distrito, direcciÃ³n, nÃºmero de serie.
     """
     def _q():
         # Mapeos
@@ -1137,18 +1144,18 @@ async def query_18_medidores_sin_reporte(
         # Obtener todos los medidores
         medidores: dict[str, dict[str, Any]] = {}
         for m in cassandra_client.execute_raw(
-            "SELECT medidor_id, numero_serie, distrito_id, zona_id, direccion FROM medidores",
+            "SELECT medidor_id, numero_serie, distrito_id, zona_id FROM medidores",
             profile="analytics"
         ):
             med_id = str(m["medidor_id"])
             medidores[med_id] = m
         
-        # Obtener últimas lecturas
+        # Obtener Ãºltimas lecturas
         medidores_reportados = set()
         cutoff = datetime.utcnow() - timedelta(days=dias)
         
         for r in cassandra_client.execute_raw(
-            "SELECT DISTINCT medidor_id FROM lecturas_por_zona_dia",
+            "SELECT medidor_id FROM lecturas_por_zona_dia",
             profile="analytics"
         ):
             medidores_reportados.add(str(r["medidor_id"]))
@@ -1161,7 +1168,7 @@ async def query_18_medidores_sin_reporte(
                     "numero_serie": info.get("numero_serie", "N/A"),
                     "distrito": distrito_names.get(info["distrito_id"], f"Distrito {info['distrito_id']}"),
                     "zona": zona_names.get((info["distrito_id"], info["zona_id"]), f"Zona {info['zona_id']}"),
-                    "direccion": info.get("direccion", "N/A"),
+                    "direccion": "No registrada en dataset",
                     "medidor_id": med_id,
                     "dias_sin_reporte": dias
                 })
@@ -1172,14 +1179,14 @@ async def query_18_medidores_sin_reporte(
 
 
 # ============================================================================
-# CONSULTA 19: Proyección de ingresos por consumo de agua por tipo de tarifa
+# CONSULTA 19: ProyecciÃ³n de ingresos por consumo de agua por tipo de tarifa
 # ============================================================================
 @router.get("/consultas/19")
 async def query_19_proyeccion_ingresos(
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna proyección de ingresos por consumo de agua por tipo de tarifa
+    Retorna proyecciÃ³n de ingresos por consumo de agua por tipo de tarifa
     para el mes actual (en USD).
     """
     def _q():
@@ -1209,7 +1216,7 @@ async def query_19_proyeccion_ingresos(
                 "S": {"alias": "Social", "usd_mes": 0.7, "fijo_m3": 0.7}
             }
         
-        # Contar medidores activos por categoría
+        # Contar medidores activos por categorÃ­a
         medidores_por_cat: dict[str, int] = defaultdict(int)
         for m in cassandra_client.execute_raw(
             "SELECT categoria_tarifa, estado FROM medidores WHERE estado = 'ACTIVO' ALLOW FILTERING",
@@ -1248,20 +1255,20 @@ async def query_19_proyeccion_ingresos(
 
 
 # ============================================================================
-# CONSULTA 20: Monto y clientes a quienes cobrar consumo mínimo residencial
+# CONSULTA 20: Monto y clientes a quienes cobrar consumo mÃ­nimo residencial
 # ============================================================================
 @router.get("/consultas/20")
 async def query_20_consumo_minimo_residencial(
-    consumo_minimo_m3: float = Query(12.0, description="Consumo mínimo m³/mes"),
+    consumo_minimo_m3: float = Query(12.0, description="Consumo mÃ­nimo mÂ³/mes"),
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna monto total a cobrar por consumo mínimo a clientes residenciales
-    que consumieron menos del mínimo en el período.
+    Retorna monto total a cobrar por consumo mÃ­nimo a clientes residenciales
+    que consumieron menos del mÃ­nimo en el perÃ­odo.
     """
     def _q():
         # Obtener tarifa residencial base
-        precio_m3 = 1.4  # Precio aproximado por m³
+        precio_m3 = 1.4  # Precio aproximado por mÂ³
         try:
             for r in cassandra_client.execute_raw(
                 "SELECT fijo_m3 FROM tarifas WHERE categoria = 'R1'",
@@ -1272,7 +1279,7 @@ async def query_20_consumo_minimo_residencial(
         except Exception:
             pass
         
-        # Contar residenciales con consumo < mínimo
+        # Contar residenciales con consumo < mÃ­nimo
         medidores_bajo_minimo = 0
         for r in cassandra_client.execute_raw(
             "SELECT medidor_id, consumo_litros FROM lecturas_por_zona_dia",
@@ -1296,14 +1303,14 @@ async def query_20_consumo_minimo_residencial(
 
 
 # ============================================================================
-# CONSULTA 21: Proyección de ingresos por tarifa en pies cúbicos
+# CONSULTA 21: ProyecciÃ³n de ingresos por tarifa en pies cÃºbicos
 # ============================================================================
 @router.get("/consultas/21")
 async def query_21_ingresos_pies3(
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna proyección de ingresos convertida a pies cúbicos (para reportes internacionales).
+    Retorna proyecciÃ³n de ingresos convertida a pies cÃºbicos (para reportes internacionales).
     """
     def _q():
         # Sumar consumo total
@@ -1316,7 +1323,7 @@ async def query_21_ingresos_pies3(
         
         # Convertir
         consumo_m3 = consumo_litros_total / 1_000_000
-        consumo_pies3 = consumo_m3 * 35.3147  # 1 m³ = 35.3147 pies³
+        consumo_pies3 = consumo_m3 * 35.3147  # 1 mÂ³ = 35.3147 piesÂ³
         
         # Asumir precio promedio
         precio_promedio_usd_m3 = 5.0  # Promedio ponderado
@@ -1335,16 +1342,16 @@ async def query_21_ingresos_pies3(
 
 
 # ============================================================================
-# CONSULTA 22 (SORPRESA 3): Detección de anomalías y patrones de consumo
+# CONSULTA 22 (SORPRESA 3): DetecciÃ³n de anomalÃ­as y patrones de consumo
 # ============================================================================
 @router.get("/consultas/22")
 async def query_22_deteccion_anomalias(
     _u: dict = Depends(current_user),
 ):
     """
-    CONSULTA SORPRESA 3: Identifica patrones anómalos de consumo:
-    - Consumo cero por más de 7 días
-    - Incrementos súbitos >200%
+    CONSULTA SORPRESA 3: Identifica patrones anÃ³malos de consumo:
+    - Consumo cero por mÃ¡s de 7 dÃ­as
+    - Incrementos sÃºbitos >200%
     - Consumo nocturno > consumo diurno (posible fuga)
     """
     def _q():
@@ -1355,7 +1362,7 @@ async def query_22_deteccion_anomalias(
             "total_medidores_anomalos": 0
         }
         
-        # Simular análisis de patrones
+        # Simular anÃ¡lisis de patrones
         consumo_por_hora: dict[int, int] = defaultdict(int)
         
         for r in cassandra_client.execute_raw(
@@ -1383,14 +1390,14 @@ async def query_22_deteccion_anomalias(
 
 
 # ============================================================================
-# CONSULTA 23 (SORPRESA 4): Análisis de cobertura de gateways
+# CONSULTA 23 (SORPRESA 4): AnÃ¡lisis de cobertura de gateways
 # ============================================================================
 @router.get("/consultas/23")
 async def query_23_analisis_cobertura_gateways(
     _u: dict = Depends(current_user),
 ):
     """
-    CONSULTA SORPRESA 4: Análisis detallado de cobertura por gateway:
+    CONSULTA SORPRESA 4: AnÃ¡lisis detallado de cobertura por gateway:
     - Medidores por gateway
     - Tasa de actividad
     - Zonas de cobertura principal
@@ -1451,14 +1458,14 @@ async def query_23_analisis_cobertura_gateways(
 
 
 # ============================================================================
-# CONSULTA 24: Proyección de ingresos detallada con desglose
+# CONSULTA 24: ProyecciÃ³n de ingresos detallada con desglose
 # ============================================================================
 @router.get("/consultas/24")
 async def query_24_proyeccion_ingresos_detallada(
     _u: dict = Depends(current_user),
 ):
     """
-    Retorna proyección de ingresos mensuales con desglose por tramo de consumo.
+    Retorna proyecciÃ³n de ingresos mensuales con desglose por tramo de consumo.
     """
     def _q():
         # Obtener tarifas y tramos
@@ -1472,7 +1479,7 @@ async def query_24_proyeccion_ingresos_detallada(
         except Exception:
             pass
         
-        # Agrupar medidores por categoría y sumar consumo
+        # Agrupar medidores por categorÃ­a y sumar consumo
         consumo_por_cat: dict[str, int] = defaultdict(int)
         for r in cassandra_client.execute_raw(
             "SELECT categoria_tarifa, consumo_litros FROM lecturas_por_zona_dia",
@@ -1486,8 +1493,8 @@ async def query_24_proyeccion_ingresos_detallada(
         for categoria, consumo_litros in sorted(consumo_por_cat.items()):
             consumo_m3 = consumo_litros / 1_000_000
             
-            # Precio fijo por m³ (simplificado)
-            precio_unitario = 5.0  # USD/m³ promedio
+            # Precio fijo por mÂ³ (simplificado)
+            precio_unitario = 5.0  # USD/mÂ³ promedio
             if categoria in tarifas_info:
                 precio_unitario = float(tarifas_info[categoria].get("fijo_m3", 5.0))
             
@@ -1517,21 +1524,21 @@ async def query_24_proyeccion_ingresos_detallada(
 
 
 # ============================================================================
-# CONSULTA 25 (SORPRESA 5): Análisis predictivo de valor estratégico
+# CONSULTA 25 (SORPRESA 5): AnÃ¡lisis predictivo de valor estratÃ©gico
 # ============================================================================
 @router.get("/consultas/25")
 async def query_25_analisis_predictivo_estrategico(
     _u: dict = Depends(current_user),
 ):
     """
-    CONSULTA SORPRESA 5: Análisis predictivo y recomendaciones estratégicas:
+    CONSULTA SORPRESA 5: AnÃ¡lisis predictivo y recomendaciones estratÃ©gicas:
     - Distritos con mayor potencial de ingresos
-    - Zonas críticas para inversión en infraestructura
-    - Proyección de ROI por mantenimiento preventivo
+    - Zonas crÃ­ticas para inversiÃ³n en infraestructura
+    - ProyecciÃ³n de ROI por mantenimiento preventivo
     - Recomendaciones de mejora operacional
     """
     def _q():
-        # Obtener estadísticas por distrito
+        # Obtener estadÃ­sticas por distrito
         distrito_stats: dict[int, dict[str, Any]] = defaultdict(lambda: {
             "medidores": 0, "activos": 0, "consumo": 0, "ingresos_est": 0
         })
@@ -1542,7 +1549,7 @@ async def query_25_analisis_predictivo_estrategico(
         ):
             pass  # Cassandra no soporta JOINs directamente
         
-        # Simulación con datos agregados
+        # SimulaciÃ³n con datos agregados
         for r in cassandra_client.execute_raw(
             "SELECT distrito_id, estado FROM medidores",
             profile="analytics"
@@ -1552,21 +1559,21 @@ async def query_25_analisis_predictivo_estrategico(
             if r.get("estado") == "ACTIVO":
                 distrito_stats[d_id]["activos"] += 1
         
-        # Calcular métricas estratégicas
+        # Calcular mÃ©tricas estratÃ©gicas
         result = []
         for d_id, stats in sorted(distrito_stats.items(), key=lambda x: -x[1]["activos"]):
             tasa_cobertura = (stats["activos"] / stats["medidores"] * 100) if stats["medidores"] > 0 else 0
             
             # Clasificar
             if tasa_cobertura > 90:
-                nivel_salud = "ÓPTIMO"
+                nivel_salud = "Ã“PTIMO"
                 prioridad = "MANTENIMIENTO"
             elif tasa_cobertura > 75:
                 nivel_salud = "BUENO"
                 prioridad = "MONITOREO"
             else:
-                nivel_salud = "CRÍTICO"
-                prioridad = "INVERSIÓN URGENTE"
+                nivel_salud = "CRÃTICO"
+                prioridad = "INVERSIÃ“N URGENTE"
             
             result.append({
                 "distrito_id": d_id,
@@ -1583,10 +1590,14 @@ async def query_25_analisis_predictivo_estrategico(
             "resultados": result,
             "recomendaciones_estrategicas": [
                 "Invertir en zonas con cobertura <75%",
-                "Implementar mantenimiento preventivo en zonas ÓPTIMAS",
+                "Implementar mantenimiento preventivo en zonas Ã“PTIMAS",
                 "Reducir tiempo de respuesta en mantenimiento correctivo",
-                "Evaluar modernización de modelos de medidores con >20% tasa de falla"
+                "Evaluar modernizaciÃ³n de modelos de medidores con >20% tasa de falla"
             ]
         }
     
     return await _cached("q:25:analisis_predictivo", _q, ttl=CACHE_TTL_LONG)
+
+
+
+

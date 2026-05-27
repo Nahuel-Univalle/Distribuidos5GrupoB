@@ -1,8 +1,8 @@
-"""Detección de anomalías: lecturas con error y morosos.
+﻿"""DetecciÃ³n de anomalÃ­as: lecturas con error y morosos.
 
-Endpoints protegidos — requieren autenticación.
-  GET /api/v1/anomalias              → lecturas ERROR + consumo excesivo
-  GET /api/v1/anomalias/morosos      → contratos con facturas PENDIENTE vencidas
+Endpoints protegidos â€” requieren autenticaciÃ³n.
+  GET /api/v1/anomalias              â†’ lecturas ERROR + consumo excesivo
+  GET /api/v1/anomalias/morosos      â†’ contratos con facturas PENDIENTE vencidas
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from app.core.security import current_user
 
 router = APIRouter()
 
-_UMBRAL_CONSUMO_LITROS = 50_000  # litros: umbral para anomalía de consumo excesivo
+_UMBRAL_CONSUMO_LITROS = 50_000  # litros: umbral para anomalÃ­a de consumo excesivo
 
 
 def _serialize_value(v: Any) -> Any:
@@ -41,16 +41,16 @@ async def anomalias(
     umbral_factor: float = Query(3.0, ge=1.0, le=100.0),
     _u: dict = Depends(current_user),
 ):
-    """Devuelve lecturas con estado ERROR y lecturas con consumo anómalamente alto."""
+    """Devuelve lecturas con estado ERROR y lecturas con consumo anÃ³malamente alto."""
     umbral_litros = int(_UMBRAL_CONSUMO_LITROS * umbral_factor)
     result: list[dict] = []
 
-    # Lecturas con status de error (status >= 3: errores IoT; status=9: anomalía ingestor)
+    # Lecturas con status de error (status >= 3: errores IoT; status=9: anomalÃ­a ingestor)
     # Columnas reales: medidor_id, anio_mes, fecha_hora, gateway_id, lectura_litros, consumo_litros, status
     error_rows = list(
         cassandra_client.execute_raw(
             f"SELECT medidor_id, consumo_litros, fecha_hora, status "
-            f"FROM lecturas_por_medidor WHERE status >= 3 ALLOW FILTERING LIMIT {limite}",
+            f"FROM lecturas_por_medidor WHERE status >= 3 LIMIT {limite} ALLOW FILTERING",
             profile="analytics",
         )
     )
@@ -71,7 +71,7 @@ async def anomalias(
         cassandra_client.execute_raw(
             f"SELECT medidor_id, consumo_litros, fecha_hora, status "
             f"FROM lecturas_por_medidor WHERE consumo_litros > {umbral_litros} "
-            f"AND status < 3 ALLOW FILTERING LIMIT {limite}",
+            f"AND status < 3 LIMIT {limite} ALLOW FILTERING",
             profile="analytics",
         )
     )
@@ -109,7 +109,7 @@ async def morosos(
     pendientes = list(
         cassandra_client.execute_raw(
             f"SELECT numero_contrato, periodo, monto_bs, estado "
-            f"FROM facturas WHERE estado='PENDIENTE' ALLOW FILTERING LIMIT {limite}",
+            f"FROM facturas WHERE estado='PENDIENTE' LIMIT {limite} ALLOW FILTERING",
             profile="analytics",
         )
     )
@@ -144,3 +144,4 @@ async def morosos(
     await redis_client.set(cache_key, json.dumps(payload, default=str), ttl_seconds=120)
 
     return payload
+
